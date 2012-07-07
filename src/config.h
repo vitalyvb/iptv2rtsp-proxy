@@ -3,18 +3,14 @@
 
 #define PROGRAM_NAME "iptv2rtsp-proxy"
 
-#ifdef DEBUG
-#	define DEFAULT_CONFIG_FILE ("./" PROGRAM_NAME ".conf")
-#else
-#	define DEFAULT_CONFIG_FILE ("/etc/" PROGRAM_NAME ".conf")
-#endif
+#define DEFAULT_CONFIG_FILE ("/etc/" PROGRAM_NAME ".conf")
 
 #define DEFAULT_PID_FILE ("/var/run/" PROGRAM_NAME ".pid")
 
 /* mpeio */
 #define MPEGIO_NOT_USED_TIMEOUT (60.0)
 
-#define MPEGIO_DEFAULT_RINGBUF_SIZE (768*1024)
+#define MPEGIO_DEFAULT_RINGBUF_SIZE (1024*1024)
 #define MPEGIO_MAX_STREAM_DELAY (100)
 
 /* rtsp */

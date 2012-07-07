@@ -63,6 +63,8 @@ int debug = 0;
 int verbose = 0;
 struct ev_loop *evloop;
 ev_tstamp ev_started_at;
+char *server_str_id = NULL;
+int server_listen_port = 0;
 
 static int log_to_stderr;
 static int io_sched_realtime;
@@ -83,8 +85,10 @@ static void usage()
     printf("Usage: " PROGRAM_NAME " [options]\n");
     printf("options:\n");
     printf("\t-h\tthis screen\n");
-    printf("\t-d\tenable debugging\n");
     printf("\t-v\tverbose\n");
+    printf("\t-d\tdon't fork and log some debug info\n");
+    printf("\t-s\tserver id (IP address for SDP origin)\n");
+    printf("\t-l\trtsp listen port\n");
     printf("\t-f\tstay in foreground\n");
     printf("\t-c file\tconfig file name\n");
     printf("\t-p file\tpid file name\n");
@@ -101,7 +105,7 @@ void log_message(int level, const char *module, const char *module_dyn, const ch
 
     p = buf = alloca(buffree);
 
-    if (log_to_stderr){
+    if (!log_to_stderr){
 	if (module_dyn)
 	    res = snprintf(p, buffree, "%s[%s]: ", module, module_dyn);
 	else
@@ -167,15 +171,20 @@ int load_config(const char *filename)
     char *nopriv_uid_name;
     char *nopriv_gid_name;
     dictionary* ini_dict;
-    char *s;
+    const char *s;
 
     ini_dict = iniparser_load(filename);
 
     if (ini_dict == NULL){
-	return 1;
+	log_error("Unable to load config file '%s'.", filename);
     }
 
     io_sched_realtime = iniparser_getboolean(ini_dict, "sched:realtime_io", 0);
+
+    if (server_str_id == NULL){
+	s = iniparser_getstring(ini_dict, "general:server_id", "192.168.0.1");
+	server_str_id = strdup(s);
+    }
 
     s = iniparser_getstring(ini_dict, "general:user", "nobody");
     nopriv_uid_name = xmalloc(strlen(s)+1);
@@ -192,7 +201,9 @@ int load_config(const char *filename)
     if (rtsp_load_config(rtsp_server, ini_dict))
 	return 1;
 
-    iniparser_freedict(ini_dict);
+    if (ini_dict)
+	iniparser_freedict(ini_dict);
+
     return 0;
 }
 
@@ -263,11 +274,15 @@ static int write_pid_file(const char *filename)
 
     if (write(pidfd, buf, len) != len){
 	log_error("error writing pid file: %m");
+	close(pidfd);
+	pidfd = -1;
 	return 1;
     }
 
     if (atexit(clean_pid_file)){
 	log_error("can not regiser function to remove pidfile on exit");
+	close(pidfd);
+	pidfd = -1;
     }
     return 0;
 }
@@ -329,7 +344,7 @@ int main(int argc, char **argv)
 
     opterr = 0;
 
-    while ((c = getopt (argc, argv, "vhdfc:p:")) != -1) {
+    while ((c = getopt (argc, argv, "vhdfc:p:s:l:")) != -1) {
 	switch (c) {
 	case 'v':
 	    verbose++;
@@ -350,8 +365,18 @@ int main(int argc, char **argv)
 	case 'p':
 	    pid_fn = optarg;
 	    break;
+	case 's':
+	    server_str_id = strdup(optarg);
+	    break;
+	case 'l':
+	    server_listen_port = atoi(optarg);
+	    if (server_listen_port < 1 || server_listen_port > 65534){
+		fprintf (stderr, "Invalid listen port: %s.\n", optarg);
+		return 1;
+	    }
+	    break;
 	case '?':
-	    if ((optopt == 'c') || (optopt == 'p'))
+	    if ((optopt == 'c') || (optopt == 'p') || (optopt == 's') || (optopt == 'l'))
 		fprintf (stderr, "Option -%c requires an argument.\n", optopt);
 	    else if (isprint (optopt))
 		fprintf (stderr, "Unknown option `-%c'.\n", optopt);
@@ -380,7 +405,7 @@ int main(int argc, char **argv)
     log_to_stderr = !do_fork;
 
     if (!log_to_stderr)
-	openlog("server", LOG_PID, LOG_DAEMON);
+	openlog(PROGRAM_NAME, LOG_PID, LOG_DAEMON);
 
     if (load_config(config_fn)) {
 	fprintf (stderr, "Error loading config file.\n");
@@ -389,17 +414,17 @@ int main(int argc, char **argv)
 
     my_random_init();
 
-//    if (do_fork){
-//	ev_loop_fork ()
-//	log_debug("forking...");
-//	if (daemon(0, 0)){
-//	    log_error("daemonize failed: %d", errno);
-//	    return -1;
-//	}
-//	if (write_pid_file(pid_fn)){
-//	    return -1;
-//	}
-//    }
+    if (do_fork){
+	log_debug("forking...");
+	if (daemon(0, 0)){
+	    log_error("daemonize failed: %d", errno);
+	    return -1;
+	}
+	if (write_pid_file(pid_fn)){
+	    log_warning("failed to create pid file");
+	}
+	ev_loop_fork(evloop);
+    }
 
 
     if (!do_fork) {
@@ -441,10 +466,13 @@ int main(int argc, char **argv)
 
     csconv_cleanup();
 
-    if (!log_to_stderr)
-	closelog();
+    if (server_str_id)
+	free(server_str_id);
 
     log_info("exiting...");
+
+    if (!log_to_stderr)
+	closelog();
 
     return 0;
 }

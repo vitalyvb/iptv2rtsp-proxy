@@ -1292,21 +1292,23 @@ RTSP rtsp_alloc()
 
 int rtsp_load_config(THIS, dictionary * d)
 {
-    const char *ini_server_id, *ini_listen_host;
+    const char *ini_listen_host;
     uint16_t ini_listen_port, ini_rtp_server_base_port;
     int ini_mpegio_bufsize, ini_mpegio_delay;
 
-    ini_server_id = iniparser_getstring(d, "rtsp:server_id", "192.168.0.1");
-
     ini_listen_host = iniparser_getstring(d, "rtsp:listen_host", "0.0.0.0");
-    ini_listen_port = iniparser_getint(d, "rtsp:listen_port", 554);
+
+    if (server_listen_port)
+	ini_listen_port = server_listen_port;
+    else
+	ini_listen_port = iniparser_getint(d, "rtsp:listen_port", 554);
 
     ini_rtp_server_base_port = iniparser_getint(d, "rtsp:rtp_server_base_port", 4000);
 
     ini_mpegio_bufsize = iniparser_getint(d, "mpegio:buffer_size", MPEGIO_DEFAULT_RINGBUF_SIZE);
     ini_mpegio_delay = iniparser_getint(d, "mpegio:delay", MPEGIO_MAX_STREAM_DELAY);
 
-    strncpy(this->server_id, ini_server_id, sizeof(this->server_id)-1);
+    strncpy(this->server_id, server_str_id, sizeof(this->server_id)-1);
     this->server_id[sizeof(this->server_id)-1] = 0;
 
     this->listen_port = ini_listen_port;
@@ -1342,7 +1344,10 @@ int rtsp_init(THIS)
     this->server.new_connection = new_connection;
     this->server.data = this;
 
-    ebb_server_listen_on_port(&this->server, this->listen_port);
+    if (ebb_server_listen_on_port(&this->server, this->listen_port) < 0){
+	log_error("Failed to start RTSP server on port %d", this->listen_port);
+	return -1;
+    }
 
     ev_timer_init(&this->sess_timeout_watcher, ev_sess_check_timeout_handler,
 		    RTSP_CHECK_SESSION_TIMEOUTS_ITER, RTSP_CHECK_SESSION_TIMEOUTS_ITER);

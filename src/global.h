@@ -27,7 +27,7 @@
 #endif
 
 #undef offsetof
-#ifdef __GNUC__
+#if defined(__GNUC__) && (__GNUC__ >= 4)
 # define offsetof(TYPE, MEMBER) __builtin_offsetof(TYPE,MEMBER)
 #else
 # define offsetof(TYPE, MEMBER) ((size_t) &((TYPE *)0)->MEMBER)
@@ -102,5 +102,7 @@ extern int debug;
 extern int verbose;
 extern struct ev_loop *evloop;
 extern ev_tstamp ev_started_at;
+extern char *server_str_id;
+extern int server_listen_port;
 
 #endif /* GLOBAL_H */
