@@ -1,0 +1,41 @@
+#ifndef MPEGIO_H
+#define MPEGIO_H
+
+#include "global.h"
+
+struct mpegio_stream;
+struct mpegio_client;
+typedef struct mpegio_stream *MPEGIO;
+
+struct mpegio_config {
+    /* this struct is used as a key to determine uniquness of a mpegio */
+    /* make sure to memset(0) new structs for conistent results*/
+    struct in_addr addr;
+    uint16_t port;
+
+    int __key_end;	// all data int this struct below this line is not part of a key
+
+    int init_buf_size;
+    int streaming_delay;
+};
+
+#define MPEGIO_KEY_SIZE (offsetof(struct mpegio_config, __key_end))
+
+int mpegio_configure(MPEGIO, struct mpegio_config *conf);
+MPEGIO mpegio_alloc();
+void *mpegio_get_keyptr(MPEGIO);
+int mpegio_init(MPEGIO);
+int mpegio_is_initialized(MPEGIO);
+void mpegio_free(MPEGIO);
+
+struct mpegio_client *mpegio_client_create(MPEGIO, struct in_addr *dest, uint16_t port, uint32_t ssrc);
+
+struct mpegio_client *mpegio_client_find_by_id(MPEGIO, int client_id);
+int mpegio_client_get_parameters(MPEGIO, struct mpegio_client *client, int *id, uint32_t *ssrc, uint32_t *rtp_seq);
+
+int mpegio_client_send_error_notify(MPEGIO, struct mpegio_client *client);
+int mpegio_client_set_active(MPEGIO, struct mpegio_client *client, int active);
+int mpegio_clientid_set_active(MPEGIO, int client_id, int active);
+int mpegio_clientid_destroy(MPEGIO, int client_id);
+
+#endif /* MPEGIO_H */

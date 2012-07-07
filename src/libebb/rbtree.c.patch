@@ -1,0 +1,11 @@
+--- rbtree.c.orig	2012-07-02 21:18:03.606673978 +0300
++++ rbtree.c	2012-07-02 21:18:51.598930331 +0300
+@@ -313,6 +313,8 @@
+         delete_case1(t, n);
+     }
+     replace_node(t, n, child);
++    if (n->parent == NULL && child != NULL)
++        child->color = BLACK;
+ 
+     verify_properties(t);
+     return n;
