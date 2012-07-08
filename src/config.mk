@@ -15,6 +15,8 @@ LD = $(CC)
 LDFLAGS = -Wl,--as-needed
 LDLIBS = -lpthread
 
+CFLAGS += -DHT_INLINE
+
 #CFLAGS += -DNDEBUG
 CFLAGS += -DDEBUG
 

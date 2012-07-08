@@ -33,7 +33,7 @@
 #include <arpa/inet.h>
 
 #include "ebb.h"
-#include "rbtree.h"
+#include "jhash.h"
 
 #define LOG_MODULE ("rtsp")
 #define LOG_PARAM (NULL)
@@ -44,6 +44,7 @@
 #include "utils.h"
 #include "rtsp.h"
 #include "rtspproto.h"
+#include "ht.h"
 
 #include <assert.h>
 
@@ -51,14 +52,19 @@
 #include "duma.h"
 #endif
 
+/***********************************************************************/
+
 struct rtsp_mpegio_streamer {
-    struct rbtree_node_t node;
+    struct hashable hh;
+
+    struct mpegio_config config;
     MPEGIO mpegio;
     int id;
 };
 
 struct rtsp_session {
-    struct rbtree_node_t node;
+    struct hashable hh_ssrc;
+    struct hashable hh_sess;
 
     rtsp_session_id session_id;
 
@@ -73,13 +79,10 @@ struct rtsp_session {
     int mpegio_client_id;
 
     uint32_t ssrc;
-    struct rtsp_session *ssrc_hash_next;
 
     ev_tstamp rtcp_latest_activity;
     int rtcp_reported_packet_loss;
 };
-
-#define RTSP_SESS_HASH(x) ( (x) & RTSP_SESS_HASHMASK )
 
 struct rtsp_server {
     ebb_server server;
@@ -90,18 +93,19 @@ struct rtsp_server {
     uint16_t rtp_base_port;
 
     int mpegio_latest_id;
-    struct rbtree_t rbmpegios;
-
-    struct rbtree_t rbsessions;
+    struct ht streamers_ht;
     int connection_counter;
 
     ev_io rtcp_input_watcher;
     int rtcp_fd;
 
     ev_timer sess_timeout_watcher;
-    int sess_timeout_last_bkt;
+//    int sess_timeout_last_bkt;
 
-    struct rtsp_session *ssrc_hash[RTSP_SESS_HASHMASK+1];
+    struct ht sess_id_ht;
+    struct ht sess_ssrc_ht;
+
+    struct ht_iterator sess_htiter;
 
     int mpegio_bufsize;
     int mpegio_delay;
@@ -822,20 +826,25 @@ int on_timeout(ebb_connection *connection)
 
 /************************************************************************/
 
-static int rbcompare_mpegio(void* leftp, void* rightp) {
-    return memcmp(leftp, rightp, MPEGIO_KEY_SIZE);
+static hthash_value htfunc_session(const void *item)
+{
+    const struct rtsp_session *sess = item;
+    /* XXX maybe it's a good idea to slightly randomize this,
+     * like xor value with time daemon started or something
+     */
+    return sess->session_id ^ (sess->session_id >> 32);
 }
 
-static int rbcompare_session(void* leftp, void* rightp) {
-    rtsp_session_id left = *(rtsp_session_id*)leftp;
-    rtsp_session_id right = *(rtsp_session_id*)rightp;
-
-    if (left < right) 
+static int htfunc_session_cmp(const void *_item1, const void *_item2_or_key)
+{
+    const struct rtsp_session *item1 = _item1;
+    const struct rtsp_session *item2_or_key = _item2_or_key;
+    /* we can't use subtract here because of integer size difference */
+    if (likely(item1->session_id == item2_or_key->session_id))
+	return 0;
+    if (item1->session_id < item2_or_key->session_id)
 	return -1;
-    else if (left > right)
-	return 1;
-
-    return 0;
+    return 1;
 }
 
 static struct rtsp_session *rtsp_session_alloc(THIS)
@@ -847,11 +856,7 @@ static struct rtsp_session *rtsp_session_alloc(THIS)
 
     sess->session_id = my_rand();
 
-    sess->node.key = &sess->session_id;
-    sess->node.value = sess;
-
-    rbtree_insert(&this->rbsessions, &sess->node);
-
+    ht_insert(&this->sess_id_ht, sess, htfunc_session);
     return sess;
 }
 
@@ -862,17 +867,42 @@ void rtsp_session_free(struct rtsp_session *sess)
 
 static struct rtsp_session *rtsp_session_get(THIS, rtsp_session_id *session_id)
 {
-    struct rtsp_session *sess = rbtree_lookup(&this->rbsessions, session_id);
+    struct rtsp_session tmpsess;
+    struct rtsp_session *sess;
+
+    tmpsess.session_id = *session_id;
+
+    sess = ht_find(&this->sess_id_ht, &tmpsess, htfunc_session, htfunc_session_cmp);
     return sess;
 }
 
 static struct rtsp_session *rtsp_session_remove(THIS, rtsp_session_id *session_id)
 {
-    struct rtsp_session *sess = (struct rtsp_session *)rbtree_delete(&this->rbsessions, session_id);
+    struct rtsp_session tmpsess;
+    struct rtsp_session *sess;
+
+    tmpsess.session_id = *session_id;
+
+    sess = ht_remove(&this->sess_id_ht, &tmpsess, htfunc_session, htfunc_session_cmp);
     return sess;
 }
 
 /************************************************************************/
+
+static hthash_value htfunc_streamer(const void *item)
+{
+    const struct rtsp_mpegio_streamer *streamer = item;
+    return hashword((void*)&streamer->config, MPEGIO_KEY_SIZE/sizeof(uint32_t), HASH_INITIAL);
+}
+
+static int htfunc_streamer_cmp(const void *_item1, const void *_item2_or_key)
+{
+    const struct rtsp_mpegio_streamer *item1 = _item1;
+    const struct rtsp_mpegio_streamer *item2_or_key = _item2_or_key;
+
+    return memcmp(&item1->config, &item2_or_key->config, MPEGIO_KEY_SIZE);
+}
+
 
 static MPEGIO create_setup_mpegio(struct mpegio_config *conf)
 {
@@ -925,35 +955,35 @@ struct rtsp_session *rtsp_setup_session(THIS, struct in_addr *client_addr, struc
     struct rtsp_session *sess;
     struct rtsp_mpegio_streamer *streamer;
     struct mpegio_client *client;
-    struct mpegio_config conf;
+    struct rtsp_mpegio_streamer streamer_conf;
     MPEGIO mpegio;
 
     uint32_t rtp_seq;
     uint32_t ssrc;
 
-    if (requested_stream_to_mpegio_conf(this, rs, &conf)){
+    if (requested_stream_to_mpegio_conf(this, rs, &streamer_conf.config)){
 	return NULL;
     }
 
-    streamer = rbtree_lookup(&this->rbmpegios, &conf);
+    streamer = ht_find(&this->streamers_ht, &streamer_conf, htfunc_streamer, htfunc_streamer_cmp);
 
     if (streamer == NULL) {
-	mpegio = create_setup_mpegio(&conf);
+	streamer = xmalloc(sizeof(struct rtsp_mpegio_streamer));
+	memset(streamer, 0, sizeof(struct rtsp_mpegio_streamer));
+
+	streamer->id = this->mpegio_latest_id++;
+	memcpy(&streamer->config, &streamer_conf.config, MPEGIO_KEY_SIZE);
+
+	mpegio = create_setup_mpegio(&streamer->config);
 	if (mpegio == NULL){
+	    xfree(streamer);
 	    log_info("mpegio setup failed");
 	    return NULL;
 	}
 
-	streamer = xmalloc(sizeof(struct rtsp_mpegio_streamer));
-	memset(streamer, 0, sizeof(struct rtsp_mpegio_streamer));
-
 	streamer->mpegio = mpegio;
-	streamer->id = this->mpegio_latest_id++;
 
-	streamer->node.key = mpegio_get_keyptr(streamer->mpegio);
-	streamer->node.value = streamer;
-
-	rbtree_insert(&this->rbmpegios, &streamer->node);
+	ht_insert(&this->streamers_ht, streamer, htfunc_streamer);
     } else {
 	if (!mpegio_is_initialized(streamer->mpegio) && mpegio_init(streamer->mpegio)){
 	    log_error("mpegio reinit failed");
@@ -989,90 +1019,70 @@ struct rtsp_session *rtsp_setup_session(THIS, struct in_addr *client_addr, struc
     return sess;
 }
 
-void rtsp_destroy_session(THIS, rtsp_session_id *session_id)
+void rtsp_free_session(THIS, struct rtsp_session *sess)
 {
-    struct rtsp_session *sess = rtsp_session_remove(this, session_id);
     struct rtsp_mpegio_streamer *streamer;
     MPEGIO mpegio;
 
+    /* session must be removed from session hast table by now */
+
+    streamer = sess->streamer;
+    mpegio = streamer->mpegio;
+
+    log_info("session %llu closed, client reported %d packets lost", sess->session_id, sess->rtcp_reported_packet_loss);
+
+    rtsp_session_all_ssrc_hash_remove(this, sess);
+    mpegio_clientid_destroy(mpegio, sess->mpegio_client_id);
+
+    rtsp_session_free(sess);
+}
+
+void rtsp_destroy_session(THIS, rtsp_session_id *session_id)
+{
+    struct rtsp_session *sess = rtsp_session_remove(this, session_id);
+
     if (sess){
-	streamer = sess->streamer;
-	mpegio = streamer->mpegio;
-
-	log_info("session %llu closed, client reported %d packets lost", sess->session_id, sess->rtcp_reported_packet_loss);
-
-	rtsp_session_all_ssrc_hash_remove(this, sess);
-	mpegio_clientid_destroy(mpegio, sess->mpegio_client_id);
-
-	rtsp_session_free(sess);
+	rtsp_free_session(this, sess);
     } else {
 	log_warning("session to destroy is not found");
     }
 }
 
+static hthash_value htfunc_sess_ssrc(const void *item)
+{
+    const struct rtsp_session *sess = item;
+    /* XXX see htfunc_session() */
+    return sess->ssrc;
+}
+
 int rtsp_session_all_ssrc_hash_remove(THIS, struct rtsp_session *sess)
 {
-    struct rtsp_session *item, *prev = NULL;
-    uint32_t ssrc = sess->ssrc;
-    int bkt = RTSP_SESS_HASH(ssrc);
+    struct rtsp_session *removed;
 
-    item = this->ssrc_hash[bkt];
+    removed = ht_remove(&this->sess_ssrc_ht, sess, htfunc_sess_ssrc, NULL);
 
-    while (item) {
-	if (item->ssrc == ssrc){
-	    if (prev == NULL){
-		this->ssrc_hash[bkt] = item->ssrc_hash_next;
-	    } else {
-		prev->ssrc_hash_next = item->ssrc_hash_next;
-	    }
-	    item->ssrc_hash_next = NULL;
-	    return 0;
-	}
-	prev = item;
-	item = item->ssrc_hash_next;
+    if (removed != NULL && removed != sess){
+	log_warning("oops, just have removed wrong session because of ssrc collision!");
     }
 
-    return -1;
+    return removed == NULL ? -1 : 0;
 }
 
 struct rtsp_session *rtsp_session_find_by_ssrc(THIS, uint32_t ssrc)
 {
-    struct rtsp_session *item;
+    struct rtsp_session tmpsess;
+    struct rtsp_session *sess;
 
-    item = this->ssrc_hash[RTSP_SESS_HASH(ssrc)];
+    tmpsess.ssrc = ssrc;
 
-    while (item) {
-	if (item->ssrc == ssrc){
-	    return item;
-	}
-	item = item->ssrc_hash_next;
-    }
-
-    return NULL;
+    sess = ht_find(&this->sess_ssrc_ht, &tmpsess, htfunc_sess_ssrc, NULL);
+    return sess;
 }
 
 int rtsp_session_set_ssrc_hash(THIS, struct rtsp_session *sess, uint32_t ssrc)
 {
-    int bkt;
-
-    if (!ssrc)
-	return -1;
-
-    if (sess->ssrc)
-	return -1;
-
     sess->ssrc = ssrc;
-
-    bkt = RTSP_SESS_HASH(ssrc);
-
-    assert(sess->ssrc_hash_next == NULL);
-
-    if (this->ssrc_hash[bkt]){
-	sess->ssrc_hash_next = this->ssrc_hash[bkt];
-	this->ssrc_hash[bkt] = sess;
-    } else {
-	this->ssrc_hash[bkt] = sess;
-    }
+    ht_insert(&this->sess_ssrc_ht, sess, htfunc_sess_ssrc);
 
     return 0;
 }
@@ -1244,37 +1254,32 @@ void rtcp_destroy(THIS)
 
 /************************************************************************/
 
-static void check_session_bucket_timeouts(THIS, struct rtsp_session *list, ev_tstamp timeouted)
-{
-    struct rtsp_session *item = list, *next;
-    while (item){
-	next = item->ssrc_hash_next;
-	if (item->rtcp_latest_activity < timeouted){
-	    rtsp_destroy_session(this, &item->session_id);
-	}
-	item = next;
-    }
-}
-
 static void ev_sess_check_timeout_handler(struct ev_loop *loop, ev_timer *w, int revents)
 {
-    /* Here we check ssrc hashtable for timeouted sessions and destroy them.
+    /* Here we check for timeouted sessions and destroy them.
      * Only part of the table is checked per call to reduce time the event loop is
      * being 'blocked'.
      */
-    const int bucket_per_iteration = (RTSP_SESS_HASHMASK+1)/(RTSP_CHECK_SESSIONS_ROUND/RTSP_CHECK_SESSION_TIMEOUTS_ITER) + 1;
+    const int bucket_per_iteration = (RTSP_SESS_HASHSIZE)/(RTSP_CHECK_SESSIONS_ROUND/RTSP_CHECK_SESSION_TIMEOUTS_ITER) + 1;
     THIS = (RTSP) w->data;
-    int bkt = this->sess_timeout_last_bkt;
-    int to_check = bucket_per_iteration;
+    void *iterstate = NULL;
+    struct rtsp_session *item;
+    int buckets_limit = bucket_per_iteration;
+
     ev_tstamp timeouted = ev_now(evloop) - NO_RTCP_SESSION_TIMEOUT;
 
-    while (to_check-- > 0){
-	if (this->ssrc_hash[bkt])
-	    check_session_bucket_timeouts(this, this->ssrc_hash[bkt], timeouted);
+    while ((item = ht_iterate(&this->sess_htiter, &iterstate, &buckets_limit)) != NULL){
+	if (item->rtcp_latest_activity < timeouted){
 
-	bkt = (bkt+1) & RTSP_SESS_HASHMASK;
+	    ht_remove(&this->sess_id_ht, item, htfunc_session, htfunc_session_cmp);
+	    rtsp_free_session(this, item);
+
+	}
+	if (ht_iterator_is_bucket_end(&this->sess_htiter, &iterstate) && buckets_limit <= 0){
+	    break;
+	}
     }
-    this->sess_timeout_last_bkt = bkt;
+
 }
 
 /************************************************************************/
@@ -1332,8 +1337,11 @@ int rtsp_load_config(THIS, dictionary * d)
 
 int rtsp_init(THIS)
 {
-    rbtree_init(&this->rbsessions, rbcompare_session);
-    rbtree_init(&this->rbmpegios, rbcompare_mpegio);
+    ht_init(&this->sess_id_ht, RTSP_SESS_HASHSIZE, offsetof(struct rtsp_session, hh_sess));
+    ht_init(&this->sess_ssrc_ht, RTSP_SESS_HASHSIZE, offsetof(struct rtsp_session, hh_ssrc));
+    ht_init(&this->streamers_ht, RTSP_MPEGIO_HASHSIZE, offsetof(struct rtsp_mpegio_streamer, hh));
+
+    ht_iterator_init(&this->sess_htiter, &this->sess_id_ht);
 
     ebb_server_init(&this->server, evloop);
 
@@ -1358,46 +1366,40 @@ int rtsp_init(THIS)
     return 0;
 }
 
-static void iterate_rbtree_for_remove(rbtree tree,  void (*cb)(void *p, void *value), void *p)
+int ht_free_session(void *item, void *param)
 {
-    rbtree_node node;
+    THIS = param;
+    struct rtsp_session *sess = item;
 
-    node = tree->root;
+    rtsp_destroy_session(this, &sess->session_id);
 
-    while (node){
-	cb(p, node->value);
-
-	if (node == tree->root){
-	    log_error("node not removed from rbtree");
-	    return;
-	}
-	node = tree->root;
-    }
+    return HT_CB_CONTINUE;
 }
 
-static void release_session(void *p, void *value)
+int ht_free_streamer(void *item, void *param)
 {
-    struct rtsp_session *sess = value;
-    rtsp_destroy_session(p, &sess->session_id);
-}
+    struct rtsp_mpegio_streamer *streamer = item;
 
-static void release_streamer(void *p, void *value)
-{
-    THIS = p;
-    struct rtsp_mpegio_streamer *streamer = value;
-    rbtree_delete(&this->rbmpegios, mpegio_get_keyptr(streamer->mpegio));
     mpegio_free(streamer->mpegio);
     xfree(streamer);
+
+    return HT_CB_CONTINUE;
 }
 
 void rtsp_cleanup(THIS)
 {
     ebb_server_unlisten(&this->server);
     ev_timer_stop(evloop, &(this->sess_timeout_watcher));
+
     rtcp_destroy(this);
 
-    iterate_rbtree_for_remove(&this->rbsessions, release_session, this);
-    iterate_rbtree_for_remove(&this->rbmpegios, release_streamer, this);
+    ht_remove_all(&this->sess_ssrc_ht, NULL, NULL);
+    ht_remove_all(&this->sess_id_ht, ht_free_session, this);
+    ht_remove_all(&this->streamers_ht, ht_free_streamer, this);
+
+    ht_destroy(&this->streamers_ht);
+    ht_destroy(&this->sess_ssrc_ht);
+    ht_destroy(&this->sess_id_ht);
 
     xfree(this);
 }

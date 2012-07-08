@@ -18,6 +18,8 @@ HEADERS = global.h config.h psi.h stats.h utils.h jhash.h mpeg_tbl.h rtspproto.h
 SRCS = server.c \
        mpegio.c \
        utils.c \
+       jhash.c \
+       ht.c \
        rng.c \
        csconv.c \
        psi.c \
@@ -27,6 +29,8 @@ SRCS = server.c \
 OBJS = $(SRCS:.c=.o)
 
 default: iptv2rtsp-proxy
+
+ht.o: ht.c ht.h
 
 iptv2rtsp-proxy: $(OBJS) iniparser/libiniparser.a libev/libev.a libebb/libebb.a
 	$(LD) $(LDFLAGS) -o $@ $^ $(LDLIBS)

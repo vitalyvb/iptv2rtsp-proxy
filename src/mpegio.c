@@ -88,12 +88,12 @@ struct mpegio_client {
 
 struct mpegio_stream {
 
-    struct mpegio_config config;
-
     int initialized;
     char *identifier;
 
     /* tunables */
+    struct in_addr addr;
+    uint16_t port;
     int ringbuf_size;
     int opt_so_rcvbuf;
     int max_stream_delay;
@@ -146,23 +146,18 @@ static void mpegio_cleanup(THIS);
 
 /************************************************************************/
 
-void *mpegio_get_keyptr(THIS)
+int mpegio_configure(MPEGIO _this, const struct mpegio_config *config)
 {
-    return &this->config;
-}
+    this->port = config->port;
+    memcpy(&this->addr, &config->addr, sizeof(struct in_addr));
 
-int mpegio_configure(MPEGIO _this, struct mpegio_config *conf)
-{
-    memcpy(&this->config, conf, sizeof(struct mpegio_config));
-
-    if (this->config.init_buf_size >= 64*1024)
-	this->ringbuf_size = this->config.init_buf_size;
+    if (config->init_buf_size >= 64*1024)
+	this->ringbuf_size = config->init_buf_size;
     else
 	this->ringbuf_size = MPEGIO_DEFAULT_RINGBUF_SIZE;
-    int streaming_delay;
 
-    if (this->config.streaming_delay >= 10 && this->config.streaming_delay < 1800*1000)
-	this->max_stream_delay = this->config.streaming_delay;
+    if (config->streaming_delay >= 10 && config->streaming_delay < 1800*1000)
+	this->max_stream_delay = config->streaming_delay;
     else
 	this->max_stream_delay = MPEGIO_MAX_STREAM_DELAY;
 
@@ -767,11 +762,11 @@ void mpegio_set_active(THIS, int active)
 	log_info("running");
 	ev_timer_stop(evloop, &this->suicide_timer);
 	this->inactive_since = 0;
-	multicast_group_join(this->recv_fd, &this->config.addr);
+	multicast_group_join(this->recv_fd, &this->addr);
     } else  if (this->active && !active){
 	log_info("pausing");
 	this->inactive_since = ev_now(evloop);
-	multicast_group_leave(this->recv_fd, &this->config.addr);
+	multicast_group_leave(this->recv_fd, &this->addr);
 	ev_timer_start(evloop, &this->suicide_timer);
     }
     this->active = active;
@@ -961,12 +956,12 @@ static int mpegio_setup_name_ident(THIS)
 {
     char ipaddr[64];
 
-    if (inet_ntop(AF_INET, &this->config.addr, ipaddr, sizeof(ipaddr)) == NULL){
+    if (inet_ntop(AF_INET, &this->addr, ipaddr, sizeof(ipaddr)) == NULL){
 	log_error("setup name inet_ntop() failed");
 	return -1;
     }
 
-    if (asprintf(&this->identifier, "%s:%d", ipaddr, this->config.port) < 0){
+    if (asprintf(&this->identifier, "%s:%d", ipaddr, this->port) < 0){
 	log_error("setup name asprintf() failed");
 	return -1;
     }
@@ -1021,8 +1016,8 @@ int mpegio_init(THIS)
 
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
-    addr.sin_port = htons(this->config.port);
-    addr.sin_addr.s_addr = this->config.addr.s_addr;
+    addr.sin_port = htons(this->port);
+    addr.sin_addr.s_addr = this->addr.s_addr;
 
     res = bind(fd, (struct sockaddr*)&addr, sizeof(addr));
 

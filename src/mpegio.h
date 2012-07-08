@@ -12,6 +12,7 @@ struct mpegio_config {
     /* make sure to memset(0) new structs for conistent results*/
     struct in_addr addr;
     uint16_t port;
+    uint16_t __padding0;
 
     int __key_end;	// all data int this struct below this line is not part of a key
 
@@ -21,9 +22,8 @@ struct mpegio_config {
 
 #define MPEGIO_KEY_SIZE (offsetof(struct mpegio_config, __key_end))
 
-int mpegio_configure(MPEGIO, struct mpegio_config *conf);
+int mpegio_configure(MPEGIO _this, const struct mpegio_config *config);
 MPEGIO mpegio_alloc();
-void *mpegio_get_keyptr(MPEGIO);
 int mpegio_init(MPEGIO);
 int mpegio_is_initialized(MPEGIO);
 void mpegio_free(MPEGIO);
