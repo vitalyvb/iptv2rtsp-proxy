@@ -1,23 +1,16 @@
-PREFIX = $(HOME)/local/libebb
 
 # libev
 EVINC  = ../libev/
 EVLIB  = ../libev/
 EVLIBS = -L${EVLIB} -lev
 
-# GnuTLS, comment if you don't want it (necessary for HTTPS)
-GNUTLSLIB   = /usr/lib
-GNUTLSINC   = /usr/include
-GNUTLSLIBS  = -L${GNUTLSLIB} -lgnutls
-#GNUTLSFLAGS = -DHAVE_GNUTLS
-
 # includes and libs
-INCS = -I${EVINC} -I${GNUTLSINC}
-LIBS = ${EVLIBS} ${GNUTLSLIBS}
+INCS = -I${EVINC}
+LIBS = ${EVLIBS}
 # -lefence
 
 # flags
-CPPFLAGS = -DVERSION=\"$(VERSION)\" ${GNUTLSFLAGS}
+CPPFLAGS = -DVERSION=\"$(VERSION)\"
 LDFLAGS  = -s ${LIBS}
 LDOPT    = -shared
 SUFFIX   = so

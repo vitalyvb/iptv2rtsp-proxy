@@ -28,10 +28,6 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <ev.h>
-#ifdef HAVE_GNUTLS
-# include <gnutls/gnutls.h>
-# include "rbtree.h" /* for ebb_server.session_cache */
-#endif 
 #include "ebb_request_parser.h"
 
 #define EBB_MAX_CONNECTIONS 1024
@@ -52,11 +48,6 @@ struct ebb_server {
   char port[6];                                 /* ro */
   struct ev_loop *loop;                         /* ro */
   unsigned listening:1;                         /* ro */
-  unsigned secure:1;                            /* ro */
-#ifdef HAVE_GNUTLS
-  gnutls_certificate_credentials_t credentials; /* private */
-  struct rbtree_t session_cache;                /* private */
-#endif
   ev_io connection_watcher;                     /* private */
 
   /* Public */
@@ -85,11 +76,6 @@ struct ebb_connection {
   ev_io read_watcher;          /* private */
   ev_timer timeout_watcher;    /* private */
   ev_timer goodbye_watcher;    /* private */
-#ifdef HAVE_GNUTLS
-  ev_io handshake_watcher;     /* private */
-  gnutls_session_t session;    /* private */
-  ev_io goodbye_tls_watcher;       /* private */
-#endif
 
   /* Public */
 
@@ -104,10 +90,6 @@ struct ebb_connection {
 };
 
 void ebb_server_init (ebb_server *server, struct ev_loop *loop);
-#ifdef HAVE_GNUTLS
-int ebb_server_set_secure (ebb_server *server, const char *cert_file, 
-                           const char *key_file);
-#endif
 int ebb_server_listen_on_port (ebb_server *server, const int port);
 int ebb_server_listen_on_fd (ebb_server *server, const int sfd);
 void ebb_server_unlisten (ebb_server *server);

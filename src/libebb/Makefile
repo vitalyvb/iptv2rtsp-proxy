@@ -3,8 +3,8 @@ include $(TOPDIR)config.mk
 
 include config.mk
 
-DEP = ebb.h ebb_request_parser.h rbtree.h
-SRC = ebb.c ebb_request_parser.c rbtree.c
+DEP = ebb.h ebb_request_parser.h
+SRC = ebb.c ebb_request_parser.c
 OBJ = ${SRC:.c=.o}
 
 VERSION = 0.1
