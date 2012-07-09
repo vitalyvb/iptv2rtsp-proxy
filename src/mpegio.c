@@ -544,6 +544,7 @@ static int cc_checker(THIS, int pid, int cc)
 static int mpegio_input_handler(THIS)
 {
     uint8_t *buf = this->ringbuf_bb;
+    int packets = 0;
     int len;
 
     len = recv(this->recv_fd, buf, RINGBUF_BB_SIZE, MSG_DONTWAIT);
@@ -725,6 +726,9 @@ static int mpegio_input_handler(THIS)
 		}
 	    }
 	}
+
+	if (packets++ >= 3)
+	    break;
 
 	len = recv(this->recv_fd, buf, RINGBUF_BB_SIZE, MSG_DONTWAIT);
     }
