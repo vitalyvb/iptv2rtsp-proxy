@@ -6,6 +6,7 @@
 struct mpegio_stream;
 struct mpegio_client;
 typedef struct mpegio_stream *MPEGIO;
+typedef void (*mpegeio_on_send_error)(void *param, uint32_t ssrc, int in_errno);
 
 struct mpegio_config {
     /* this struct is used as a key to determine uniquness of a mpegio */
@@ -16,8 +17,12 @@ struct mpegio_config {
 
     int __key_end;	// all data int this struct below this line is not part of a key
 
+    int send_fd;
     int init_buf_size;
     int streaming_delay;
+
+    mpegeio_on_send_error on_send_error;
+    void *cbdata;
 };
 
 #define MPEGIO_KEY_SIZE (offsetof(struct mpegio_config, __key_end))

@@ -80,6 +80,9 @@ struct rtsp_session {
 
     uint32_t ssrc;
 
+    ev_tstamp last_error_tstamp;
+    int send_errors;
+
     ev_tstamp rtcp_latest_activity;
     int rtcp_reported_packet_loss;
 };
@@ -98,6 +101,7 @@ struct rtsp_server {
 
     ev_io rtcp_input_watcher;
     int rtcp_fd;
+    int send_fd;
 
     ev_timer sess_timeout_watcher;
 //    int sess_timeout_last_bkt;
@@ -123,6 +127,8 @@ static int rtsp_session_play(THIS, struct rtsp_session *sess, struct rtsp_reques
 static int rtsp_session_set_ssrc_hash(THIS, struct rtsp_session *sess, uint32_t ssrc);
 static int rtsp_session_all_ssrc_hash_remove(THIS, struct rtsp_session *sess);
 static void rtsp_destroy_session(THIS, rtsp_session_id *session_id);
+
+struct rtsp_session *rtsp_session_find_by_ssrc(THIS, uint32_t ssrc);
 
 /***********************************************************************/
 
@@ -924,7 +930,33 @@ static MPEGIO create_setup_mpegio(struct mpegio_config *conf)
     return mpegio;
 }
 
-int requested_stream_to_mpegio_conf(THIS, struct rtsp_requested_stream *rs, struct mpegio_config *conf)
+void mpegio_send_error_handler(void *param, uint32_t ssrc, int in_errno)
+{
+    THIS = param;
+    struct rtsp_session *sess;
+    ev_tstamp now;
+
+    sess = rtsp_session_find_by_ssrc(this, ssrc);
+
+    if (sess != NULL){
+	now = ev_now(evloop);
+
+	if (now - sess->last_error_tstamp > 2.0){
+	    sess->send_errors = 1;
+	    sess->last_error_tstamp = now;
+	} else if (now - sess->last_error_tstamp > 0.5){
+	    sess->send_errors++;
+	    sess->last_error_tstamp = now;
+	}
+
+	if (sess->send_errors > 5){
+	    log_warning("deactivating session %llu, too many consequent send errors", sess->session_id);
+	    mpegio_clientid_set_active(sess->streamer->mpegio, sess->mpegio_client_id, 0);
+	}
+    }
+}
+
+int requested_stream_to_mpegio_key(THIS, struct rtsp_requested_stream *rs, struct mpegio_config *conf)
 {
     char *p = NULL;
 
@@ -944,9 +976,6 @@ int requested_stream_to_mpegio_conf(THIS, struct rtsp_requested_stream *rs, stru
 	return -1;
     }
 
-    conf->init_buf_size = this->mpegio_bufsize;
-    conf->streaming_delay = this->mpegio_delay;
-
     return 0;
 }
 
@@ -961,7 +990,7 @@ struct rtsp_session *rtsp_setup_session(THIS, struct in_addr *client_addr, struc
     uint32_t rtp_seq;
     uint32_t ssrc;
 
-    if (requested_stream_to_mpegio_conf(this, rs, &streamer_conf.config)){
+    if (requested_stream_to_mpegio_key(this, rs, &streamer_conf.config)){
 	return NULL;
     }
 
@@ -973,6 +1002,12 @@ struct rtsp_session *rtsp_setup_session(THIS, struct in_addr *client_addr, struc
 
 	streamer->id = this->mpegio_latest_id++;
 	memcpy(&streamer->config, &streamer_conf.config, MPEGIO_KEY_SIZE);
+
+	streamer->config.send_fd = this->send_fd;
+	streamer->config.init_buf_size = this->mpegio_bufsize;
+	streamer->config.streaming_delay = this->mpegio_delay;
+	streamer->config.on_send_error = mpegio_send_error_handler;
+	streamer->config.cbdata = this;
 
 	mpegio = create_setup_mpegio(&streamer->config);
 	if (mpegio == NULL){
@@ -1094,7 +1129,7 @@ int rtsp_session_play(THIS, struct rtsp_session *sess, struct rtsp_requested_str
     struct mpegio_config conf;
 
 
-    if (requested_stream_to_mpegio_conf(this, rs, &conf)){
+    if (requested_stream_to_mpegio_key(this, rs, &conf)){
 	return -1;
     }
 
@@ -1292,6 +1327,9 @@ RTSP rtsp_alloc()
 
     memset(_this, 0, sizeof(struct rtsp_server));
 
+    this->rtcp_fd = -1;
+    this->send_fd = -1;
+
     return _this;
 }
 
@@ -1337,15 +1375,44 @@ int rtsp_load_config(THIS, dictionary * d)
 
 int rtsp_init(THIS)
 {
+    struct sockaddr_in addr;
+    int fd, tmp, res;
+
     ht_init(&this->sess_id_ht, RTSP_SESS_HASHSIZE, offsetof(struct rtsp_session, hh_sess));
     ht_init(&this->sess_ssrc_ht, RTSP_SESS_HASHSIZE, offsetof(struct rtsp_session, hh_ssrc));
     ht_init(&this->streamers_ht, RTSP_MPEGIO_HASHSIZE, offsetof(struct rtsp_mpegio_streamer, hh));
 
     ht_iterator_init(&this->sess_htiter, &this->sess_id_ht);
 
+    fd = socket(PF_INET, SOCK_DGRAM, 0);
+    if (fd < 0) {
+	log_error("can not create send socket");
+	return -1;
+    }
+
+    tmp = 1;
+    if (setsockopt(fd, IPPROTO_IP, IP_RECVERR, &tmp, sizeof(tmp))){
+	log_warning("setting IP_RECVERR failed, error detection is reduced");
+    }
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(this->rtp_base_port);
+    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+
+    res = bind(fd, (struct sockaddr*)&addr, sizeof(addr));
+    if (res < 0){
+	log_error("can not bind rtp base socket");
+	close(fd);
+	return -1;
+    }
+
+    this->send_fd = fd;
+
     ebb_server_init(&this->server, evloop);
 
     if (rtcp_setup(this)){
+	close(this->send_fd);
+	this->send_fd = -1;
 	return -1;
     }
 

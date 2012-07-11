@@ -81,9 +81,6 @@ struct mpegio_client {
     struct sockaddr_in send_dest;
 
     uint16_t rtp_seq;
-
-    ev_tstamp last_error_tstamp;
-    int send_errors;
 };
 
 struct mpegio_stream {
@@ -97,6 +94,9 @@ struct mpegio_stream {
     int ringbuf_size;
     int opt_so_rcvbuf;
     int max_stream_delay;
+
+    mpegeio_on_send_error on_send_error;
+    void *cbdata;
 
     /* working state */
     int recv_fd;
@@ -149,6 +149,11 @@ static void mpegio_cleanup(THIS);
 int mpegio_configure(MPEGIO _this, const struct mpegio_config *config)
 {
     this->port = config->port;
+    this->send_fd = config->send_fd;
+
+    this->on_send_error = config->on_send_error;
+    this->cbdata = config->cbdata;
+
     memcpy(&this->addr, &config->addr, sizeof(struct in_addr));
 
     if (config->init_buf_size >= 64*1024)
@@ -289,14 +294,10 @@ static void handle_error_report_packet(THIS, struct sockaddr *sockaddr, int in_e
 
     ssrc = ntohl(hdr->ssrc);
 
-    client = this->clients_list;
-    while (client){
-	if (client->ssrc == ssrc){
-	    mpegio_client_send_error_notify(this, client);
-	    break;
-	}
-	client = client->next;
+    if (this->on_send_error){
+	this->on_send_error(this->cbdata, ssrc, in_errno);
     }
+
 }
 
 
@@ -595,6 +596,7 @@ static int mpegio_input_handler(THIS)
 		this->time_recv_started = 0.0;
 		this->time_recv_send = 0.0;
 		ring_buffer_release(this);
+		break;
 	    }
 
 	}
@@ -818,24 +820,6 @@ int mpegio_clientid_set_active(THIS, int client_id, int active)
     return mpegio_client_set_active(this, client, active);
 }
 
-int mpegio_client_send_error_notify(MPEGIO _this, struct mpegio_client *client)
-{
-    if (ev_now(evloop) - client->last_error_tstamp > 2.0){
-	client->send_errors = 1;
-	client->last_error_tstamp = ev_now(evloop);
-    } else if (ev_now(evloop) - client->last_error_tstamp > 0.5){
-	client->send_errors++;
-	client->last_error_tstamp = ev_now(evloop);
-    }
-
-    if (client->send_errors > 5){
-	log_warning("deactivating client %d, too many consequent send errors", client->id);
-	mpegio_client_set_active(this, client, 0);
-    }
-
-    return 0;
-}
-
 int mpegio_client_get_parameters(THIS, struct mpegio_client *client, int *id, uint32_t *ssrc, uint32_t *rtp_seq)
 {
     if (id)
@@ -1001,7 +985,6 @@ int mpegio_init(THIS)
     }
 
     this->recv_fd = -1;
-    this->send_fd = -1;
     this->opt_so_rcvbuf = 64*1024;
 
     this->ringbuf = NULL;
@@ -1032,27 +1015,6 @@ int mpegio_init(THIS)
     }
 
     this->recv_fd = fd;
-
-
-    fd = socket(PF_INET, SOCK_DGRAM, 0);
-    if (fd < 0) {
-	close(this->recv_fd);
-	this->recv_fd = -1;
-	log_error("can not create send socket");
-	return -1;
-    }
-
-    tmp = 1;
-    if (setsockopt(fd, IPPROTO_IP, IP_RECVERR, &tmp, sizeof(tmp))){
-	log_warning("setting IP_RECVERR failed, error detection is reduced");
-    }
-//    memset(&addr, 0, sizeof(addr));
-//    addr.sin_family = AF_INET;
-//    addr.sin_port = rtp_base;
-//    addr.sin_addr.s_addr = htonl(INADDR_ANY);;
-//    res = bind(fd, (struct sockaddr*)&addr, sizeof(addr));
-
-    this->send_fd = fd;
 
     memset(this->cc_check, 0, sizeof(this->cc_check));
 
@@ -1085,10 +1047,8 @@ static void mpegio_cleanup(THIS)
 	this->recv_fd = -1;
     }
 
-    if (this->send_fd >= 0){
-	close(this->send_fd);
-	this->send_fd = -1;
-    }
+    /* do not close, not ours */
+    this->send_fd = -1;
 
     if (this->psi){
 	psi_cleanup(this->psi);
