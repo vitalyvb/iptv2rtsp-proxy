@@ -1047,9 +1047,6 @@ static void mpegio_cleanup(THIS)
 	this->recv_fd = -1;
     }
 
-    /* do not close, not ours */
-    this->send_fd = -1;
-
     if (this->psi){
 	psi_cleanup(this->psi);
 	this->psi = NULL;
@@ -1073,6 +1070,12 @@ static void mpegio_cleanup(THIS)
 
 void mpegio_free(THIS)
 {
+    this->on_send_error = NULL;
+    this->cbdata = NULL;
+
+    /* do not close, not ours */
+    this->send_fd = -1;
+
     mpegio_cleanup(this);
     xfree(this);
 }
