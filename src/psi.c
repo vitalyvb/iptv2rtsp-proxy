@@ -91,8 +91,6 @@ struct mpeg_psi {
     uint16_t pmt_program_id;
     const char *mpegio_identifier;
 
-    int sdt_mangle_serial;
-    int sdt_mangle_curr_serial;
     char *current_provider_name;
     char *current_service_name;
 
@@ -138,8 +136,6 @@ int psi_init(THIS, const char *identifier)
     this->sdt_version = -1;
 
     this->pmt_program_id = PROGRAM_INVALID;
-    this->sdt_mangle_serial = 0;
-    this->sdt_mangle_curr_serial = 0;
 
     this->current_provider_name = xmalloc(SDT_NAME_LEN+1);
     this->current_service_name = xmalloc(SDT_NAME_LEN+1);
@@ -571,12 +567,13 @@ static void mpeg_psi_pat(THIS, uint8_t *data, int data_len)
 
     pat = (struct pat*)data;
 
-    sect_len = MPEG_HILO(pat->section_length);
-
-    if (MPEG_HILO(pat->section_length) + 3 > data_len)
+    if (data_len < PAT_LEN + MPEG_PSI_CRC_LEN)
 	return;
 
-    pat_prog = (void*)data + PAT_LEN;
+    sect_len = MPEG_HILO(pat->section_length);
+
+    if (sect_len + PAT_LEN_FIX > data_len)
+	return;
 
     /* these checks are safe before crc validation:
      * if crc is ok - packed will be dropped
@@ -593,6 +590,10 @@ static void mpeg_psi_pat(THIS, uint8_t *data, int data_len)
 	return;
     }
 
+    if (pat->table_id != PSI_TABLE_ID_PAT){
+	/* wrong table id, ignore */
+	return;
+    }
 
     if (crc32_check(data, sect_len + PAT_LEN_FIX, CRC32_INIT)){
 	log_warning("psi pat crc error");
@@ -600,12 +601,6 @@ static void mpeg_psi_pat(THIS, uint8_t *data, int data_len)
     }
 
     crc = *(uint32_t*)(&data[sect_len + PAT_LEN_FIX - MPEG_PSI_CRC_LEN]);
-
-
-    if (pat->table_id != PSI_TABLE_ID_PAT){
-	log_warning("psi pat invalid table_id: 0x%x", pat->table_id);
-	return;
-    }
 
     d = psi_pid_lookup(this, MPEG_PID_PAT);
 
@@ -641,6 +636,11 @@ static void mpeg_psi_pat(THIS, uint8_t *data, int data_len)
 
     while (p_offs < p_len) {
 	pat_prog = (void*)data + PAT_LEN + p_offs;
+
+	if ((p_len - p_offs) < PAT_PROG_LEN){
+	    log_info("\t <invalid descriptor size>");
+	    break;
+	}
 
 	pid = MPEG_HILO(pat_prog->network_pid);
 
@@ -689,7 +689,13 @@ static void mpeg_psi_sdt(THIS, uint8_t *data, int data_len)
 
     sdt = (void*)data;
 
+    if (data_len < SDT_LEN + MPEG_PSI_CRC_LEN)
+	return;
+
     sect_len = MPEG_HILO(sdt->section_length);
+
+    if (sect_len + SDT_LEN_FIX > data_len)
+	return;
 
     /* these checks are safe before crc validation:
      * if crc is ok - packed will be dropped
@@ -743,10 +749,15 @@ static void mpeg_psi_sdt(THIS, uint8_t *data, int data_len)
     this->sdt_version = sdt->version_number;
 
     s_offs = 0;
-    s_len = (sect_len+SDT_LEN_FIX) - (SDT_LEN+SDT_LEN_FIX+MPEG_PSI_CRC_LEN);
+    s_len = sect_len + SDT_LEN_FIX - (SDT_LEN + MPEG_PSI_CRC_LEN);
 
     while (s_offs < s_len) {
 	sdt_descr = (void*)data + SDT_LEN + s_offs;
+
+	if ((s_len - s_offs) < SDT_DESCR_LEN || (s_len - s_offs) < SDT_DESCR_LEN + MPEG_HILO(sdt_descr->descriptors_loop_length)){
+	    log_info("\t <invalid descriptor size>");
+	    break;
+	}
 
 	log_info("\t service id: %d", MPEG_HILO(sdt_descr->service_id));
 
@@ -754,31 +765,48 @@ static void mpeg_psi_sdt(THIS, uint8_t *data, int data_len)
 	dl_len = MPEG_HILO(sdt_descr->descriptors_loop_length);
 	while (dl_offs < dl_len) {
 	    descriptor_hdr = (void*)sdt_descr + SDT_DESCR_LEN + dl_offs;
+	    if ((dl_len - dl_offs) < DESCR_MIN_LEN ||
+		    (s_len - s_offs - SDT_DESCR_LEN) < dl_len){
+		log_info("\t <invalid inner descriptor size>");
+		break;
+	    }
+
 	    switch (descriptor_hdr->descriptor_tag){
 		case descriptor_id_Service_Descriptor:{
 		    int len;
 		    service_descriptor = (struct service_descriptor*)descriptor_hdr;
 
+		    if ((dl_len - dl_offs) < DESCR_MIN_LEN + service_descriptor->descriptor_length){
+			log_info("\t <invalid inner descriptor size>");
+			break;
+		    }
+
+		    if (DESCR_MIN_LEN + service_descriptor->descriptor_length < SDT_SERVIC_DESCR_MIN_LEN ||
+			DESCR_MIN_LEN + service_descriptor->descriptor_length < SDT_SERVIC_DESCR_MIN_LEN +
+								SDT_service_provider_name_length(service_descriptor) ||
+			DESCR_MIN_LEN + service_descriptor->descriptor_length < SDT_SERVIC_DESCR_MIN_LEN +
+								SDT_service_provider_name_length(service_descriptor) +
+								SDT_service_name_length(service_descriptor)){
+			log_info("\t <invalid inner descriptor size>");
+			break;
+		    }
+
 		    len = SDT_service_provider_name_length(service_descriptor);
 		    convert_dvb_string(SDT_service_provider_name(service_descriptor), len, this->current_provider_name, SDT_NAME_LEN);
 
-
 		    len = SDT_service_name_length(service_descriptor);
 		    convert_dvb_string(SDT_service_name(service_descriptor), len, this->current_service_name, SDT_NAME_LEN);
-
 
 		    log_info("\t provider: '%s', name: '%s'", this->current_provider_name, this->current_service_name);
 
 		    break;
 		}
 	    }
-	    dl_offs += sizeof(struct descriptor_hdr) + descriptor_hdr->descriptor_length;
+	    dl_offs += DESCR_MIN_LEN + descriptor_hdr->descriptor_length;
 	}
-
 	s_offs += SDT_DESCR_LEN + MPEG_HILO(sdt_descr->descriptors_loop_length);
     }
 
-    this->sdt_mangle_serial++;
 }
 
 static void mpeg_psi_pmt(THIS, uint16_t pid, uint8_t *data, int data_len)
@@ -793,7 +821,28 @@ static void mpeg_psi_pmt(THIS, uint16_t pid, uint8_t *data, int data_len)
 
     pmt = (struct pmt*)data;
 
+    if (data_len < PMT_LEN + MPEG_PSI_CRC_LEN)
+	return;
+
     sect_len = MPEG_HILO(pmt->section_length);
+
+    if (sect_len + PMT_LEN_FIX > data_len)
+	return;
+
+    /* these checks are safe before crc validation:
+     * if crc is ok - packed will be dropped
+     * if crc is broken and conditions are true, packet will be dropped
+     */
+
+    if (pmt->current_next_indicator == 0){
+	/* we are not interested in 'next' tables */
+	return;
+    }
+
+    if (pmt->table_id != PSI_TABLE_ID_PMT){
+	/* wrong table id, ignore */
+	return;
+    }
 
     if (crc32_check(data, sect_len + PMT_LEN_FIX, CRC32_INIT)){
 	log_warning("psi pmt crc error");
@@ -802,10 +851,6 @@ static void mpeg_psi_pmt(THIS, uint16_t pid, uint8_t *data, int data_len)
 
     crc = *(uint32_t*)(&data[sect_len + PMT_LEN_FIX - MPEG_PSI_CRC_LEN]);
 
-    if (pmt->table_id != PSI_TABLE_ID_PMT){
-	log_warning("psi pmt invalid table_id: 0x%x", pmt->table_id);
-	return;
-    }
 
     d = psi_pid_lookup(this, pid);
 
@@ -840,25 +885,33 @@ static void mpeg_psi_pmt(THIS, uint16_t pid, uint8_t *data, int data_len)
     pmti_len = MPEG_HILO(pmt->program_info_length);
     while (pmti_offs < pmti_len) {
 	descriptor_hdr = (void*)data + PMT_LEN + pmti_offs;
+	if ((pmti_len - pmti_offs) < DESCR_MIN_LEN || (pmti_len - pmti_offs) < DESCR_MIN_LEN+descriptor_hdr->descriptor_length){
+	    log_info("\t <invalid descriptor size>");
+	    break;
+	}
 
 	switch (descriptor_hdr->descriptor_tag){
-	    case descriptor_id_CA:
-		//register_descriptor_ecm(this, pmt, NULL, (void*)descriptor_hdr);
-		break;
+	    //case descriptor_id_CA:
+		//break;
 	    default:
 		log_info("\t tag: 0x%02x, data: %*T", descriptor_hdr->descriptor_tag,
 			descriptor_hdr->descriptor_length,
-			((char*)descriptor_hdr) + sizeof(struct descriptor_hdr));
+			((char*)descriptor_hdr) + DESCR_MIN_LEN);
 	}
 
-	pmti_offs += sizeof(struct descriptor_hdr) + descriptor_hdr->descriptor_length;
+	pmti_offs += DESCR_MIN_LEN + descriptor_hdr->descriptor_length;
     }
 
     pmti_offs = MPEG_HILO(pmt->program_info_length);
-    pmti_len = sect_len + PMT_LEN_FIX - PMT_LEN - MPEG_PSI_CRC_LEN;
-
+    pmti_len = sect_len + PMT_LEN_FIX - (PMT_LEN + MPEG_PSI_CRC_LEN);
     while (pmti_offs < pmti_len) {
 	pmt_info = (void*)data + PMT_LEN + pmti_offs;
+
+	if ((pmti_len - pmti_offs) < PMT_INFO_LEN){
+	    log_info("\t <invalid descriptor size>");
+	    break;
+	}
+
 	log_info("\t type: 0x%02x, pid: 0x%04x, len: %d", pmt_info->stream_type,
 	    MPEG_HILO(pmt_info->elementary_PID),
 	    MPEG_HILO(pmt_info->ES_info_length));
@@ -887,10 +940,16 @@ static void mpeg_psi_pmt(THIS, uint16_t pid, uint8_t *data, int data_len)
 	desc_len = MPEG_HILO(pmt_info->ES_info_length);
 	while (desc_offs < desc_len){
 	    descriptor_hdr = (void*)pmt_info + PMT_INFO_LEN + desc_offs;
+	    if ((desc_len - desc_offs) < DESCR_MIN_LEN ||
+		    (desc_len - desc_offs) < DESCR_MIN_LEN+descriptor_hdr->descriptor_length ||
+		    (pmti_len - pmti_offs - (PMT_INFO_LEN + desc_offs) < desc_len)){
+		log_info("\t <invalid descriptor size>");
+		break;
+	    }
+
 	    switch (descriptor_hdr->descriptor_tag){
-		case descriptor_id_CA:
-		    //register_descriptor_ecm(this, pmt, pmt_info, (void*)descriptor_hdr);
-		    break;
+		//case descriptor_id_CA:
+		    //break;
 		default:
 		    log_info("\t\t tag: 0x%02x, data: %*T", descriptor_hdr->descriptor_tag,
 			    descriptor_hdr->descriptor_length,
@@ -900,6 +959,5 @@ static void mpeg_psi_pmt(THIS, uint16_t pid, uint8_t *data, int data_len)
 	}
 	pmti_offs += PMT_INFO_LEN + MPEG_HILO(pmt_info->ES_info_length);
     }
-
 }
 
