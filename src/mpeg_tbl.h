@@ -53,6 +53,7 @@ struct private_section_ext_hdr {
     uint8_t	last_section_number;
 };
 
+#define DESCR_MIN_LEN 2
 struct descriptor_hdr {
     uint8_t	descriptor_tag;
     uint8_t	descriptor_length;
@@ -230,6 +231,7 @@ struct sdt_descr {
 
 #define descriptor_id_Service_Descriptor (0x48)
 #define Service_Descriptor_Max_StrLen (0xff)
+#define SDT_SERVIC_DESCR_MIN_LEN 5
 struct service_descriptor {
     uint8_t	descriptor_tag;
     uint8_t	descriptor_length;
