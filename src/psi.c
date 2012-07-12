@@ -941,8 +941,8 @@ static void mpeg_psi_pmt(THIS, uint16_t pid, uint8_t *data, int data_len)
 	while (desc_offs < desc_len){
 	    descriptor_hdr = (void*)pmt_info + PMT_INFO_LEN + desc_offs;
 	    if ((desc_len - desc_offs) < DESCR_MIN_LEN ||
-		    (desc_len - desc_offs) < DESCR_MIN_LEN+descriptor_hdr->descriptor_length ||
-		    (pmti_len - pmti_offs - (PMT_INFO_LEN + desc_offs) < desc_len)){
+		    (desc_len - desc_offs) < DESCR_MIN_LEN + descriptor_hdr->descriptor_length ||
+		    (pmti_len - pmti_offs - (PMT_INFO_LEN + desc_offs) < (desc_len - desc_offs))){
 		log_info("\t <invalid descriptor size>");
 		break;
 	    }
