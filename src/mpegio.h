@@ -37,6 +37,7 @@ struct mpegio_client *mpegio_client_create(MPEGIO, struct in_addr *dest, uint16_
 
 struct mpegio_client *mpegio_client_find_by_id(MPEGIO, int client_id);
 int mpegio_client_get_parameters(MPEGIO, struct mpegio_client *client, int *id, uint32_t *ssrc, uint32_t *rtp_seq);
+int mpegio_clientid_get_parameters(MPEGIO, int client_id, uint32_t *ssrc, uint32_t *rtp_seq);
 
 int mpegio_client_send_error_notify(MPEGIO, struct mpegio_client *client);
 int mpegio_client_set_active(MPEGIO, struct mpegio_client *client, int active);

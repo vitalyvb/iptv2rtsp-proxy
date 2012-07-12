@@ -47,4 +47,6 @@ static struct rtsp_requested_stream *alloc_requested_stream();
 void free_requested_stream(struct rtsp_requested_stream *s);
 struct rtsp_requested_stream *parse_requested_stream(char *in_text, int len);
 
+int cook_rtsp_rtp_info(char *dstbuf, int bufsize, struct rtsp_requested_stream *rs, uint32_t rtp_seq);
+
 #endif /* RTSPPROTO_H */

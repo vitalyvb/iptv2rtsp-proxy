@@ -817,7 +817,9 @@ int mpegio_client_set_active(THIS, struct mpegio_client *client, int active)
 int mpegio_clientid_set_active(THIS, int client_id, int active)
 {
     struct mpegio_client *client = mpegio_client_find_by_id(this, client_id);
-    return mpegio_client_set_active(this, client, active);
+    if (client)
+	return mpegio_client_set_active(this, client, active);
+    return -1;
 }
 
 int mpegio_client_get_parameters(THIS, struct mpegio_client *client, int *id, uint32_t *ssrc, uint32_t *rtp_seq)
@@ -832,6 +834,14 @@ int mpegio_client_get_parameters(THIS, struct mpegio_client *client, int *id, ui
 	*rtp_seq = client->rtp_seq;
 
     return 0;
+}
+
+int mpegio_clientid_get_parameters(THIS, int client_id, uint32_t *ssrc, uint32_t *rtp_seq)
+{
+    struct mpegio_client *client = mpegio_client_find_by_id(this, client_id);
+    if (client)
+	return mpegio_client_get_parameters(this, client, NULL, ssrc, rtp_seq);
+    return -1;
 }
 
 static void ev_mpegio_suicide_handler(struct ev_loop *loop, ev_timer *w, int revents)

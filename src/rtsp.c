@@ -83,7 +83,7 @@ struct rtsp_session {
     ev_tstamp last_error_tstamp;
     int send_errors;
 
-    ev_tstamp rtcp_latest_activity;
+    ev_tstamp latest_activity;
     int rtcp_reported_packet_loss;
 };
 
@@ -143,7 +143,8 @@ struct rtsp_session *rtsp_session_find_by_ssrc(THIS, uint32_t ssrc);
 #define HEADER_CONTENT_LANGUAGE	(8)
 #define HEADER_TRANSPORT	(9)
 #define HEADER_PUBLIC		(10)
-#define HEADERS_COUNT		(11)
+#define HEADER_RTP_INFO		(11)
+#define HEADERS_COUNT		(12)
 
 const struct header_names {
     const char *name;
@@ -160,6 +161,7 @@ const struct header_names {
     {"Content-Type",		HEADER_CONTENT_TYPE},
     {"Content-Language",	HEADER_CONTENT_LANGUAGE},
     {"Public",			HEADER_PUBLIC},
+    {"RTP-Info",		HEADER_RTP_INFO},
     {NULL, -1},
 };
 
@@ -292,6 +294,7 @@ int server_response_cook(struct server_response *resp)
 	bufpos += _l; \
     } while (0)
     oprintf("RTSP/1.0 %d %s" CRLF, resp->status_code, resp->reason_phrase);
+    oprintf("Server: " PROGRAM_NAME " " VERSION CRLF);
 
     for (i=0;;i++) {
 	if (header_names[i].name == NULL)
@@ -389,6 +392,7 @@ static void process_responses(ebb_connection *_connection)
 #define STATUS_INVALID_PARAMETER(_r_)	RTSP_SET_STATUS((_r_), 451, "Invalid Parameter")
 #define STATUS_SESS_NOT_FOUND(_r_)	RTSP_SET_STATUS((_r_), 454, "Session Not Found")
 #define STATUS_AGGR_NOT_ALLOWED(_r_)	RTSP_SET_STATUS((_r_), 459, "Aggregate Operation Not Allowed")
+#define STATUS_ONLY_AGGR_ALLOWED(_r_)	RTSP_SET_STATUS((_r_), 460, "Only aggregate operation allowed")
 
 #define STATUS_INTERNAL_ERROR(_r_)	RTSP_SET_STATUS((_r_), 500, "Internal Server Error")
 #define STATUS_NOT_IMPLEMENTED(_r_)	RTSP_SET_STATUS((_r_), 501, "Not Implemented")
@@ -396,6 +400,11 @@ static void process_responses(ebb_connection *_connection)
 
 static int rtsp_method_options(struct client_request *request, struct server_response *response, struct rtsp_requested_stream *rs)
 {
+    struct client_connection *connection = request->connection;
+    RTSP rtsp_server = connection->rtsp_server;
+    rtsp_session_id sess_id;
+    struct rtsp_session *rtsp_sess;
+
     /* we do not support any options (yet) */
     if (response->headers[HEADER_REQUIRE].value || response->headers[HEADER_PROXY_REQUIRE].value){
 	RTSP_SET_STATUS(response, 551, "Option not supported")
@@ -409,6 +418,15 @@ static int rtsp_method_options(struct client_request *request, struct server_res
 
 	//response->headers[HEADER_PUBLIC].value = strdup("OPTIONS, DESCRIBE, SETUP, TEARDOWN, PLAY, PAUSE");
 	response->headers[HEADER_PUBLIC].value = strdup("OPTIONS, DESCRIBE, SETUP, TEARDOWN, PLAY");
+
+	if (request->headers[HEADER_SESSION].value && 
+		parse_rtsp_session_id(request->headers[HEADER_SESSION].value, &sess_id) == 0){
+	    rtsp_sess = rtsp_session_get(rtsp_server, &sess_id);
+	    if (rtsp_sess){
+		rtsp_sess->latest_activity = ev_now(evloop);
+		response->headers[HEADER_SESSION].value = strdup(request->headers[HEADER_SESSION].value);
+	    }
+	}
     }
 
     return 0;
@@ -466,6 +484,11 @@ static int rtsp_method_setup(struct client_request *request, struct server_respo
 
     if (!request->headers[HEADER_TRANSPORT].value){
 	STATUS_INVALID_PARAMETER(response);
+	return 0;
+    }
+
+    if (request->headers[HEADER_SESSION].value){
+	STATUS_AGGR_NOT_ALLOWED(response);
 	return 0;
     }
 
@@ -536,6 +559,7 @@ static int rtsp_method_play(struct client_request *request, struct server_respon
     RTSP rtsp_server = connection->rtsp_server;
     rtsp_session_id sess_id = 0;
     struct rtsp_session *rtsp_sess;
+    uint32_t rtp_seq;
 
     if (parse_rtsp_session_id(request->headers[HEADER_SESSION].value, &sess_id)){
 	log_warning("invalid session header");
@@ -550,15 +574,20 @@ static int rtsp_method_play(struct client_request *request, struct server_respon
 	return 0;
     }
 
-    if (rtsp_sess->playing){
-	STATUS_AGGR_NOT_ALLOWED(response);
-    } else {
+    if (!rtsp_sess->playing){
 	rtsp_sess->playing = 1;
-
 	rtsp_session_play(rtsp_server, rtsp_sess, rs);
+    }
 
-	STATUS_OK(response);
-	response->headers[HEADER_SESSION].value = strdup(request->headers[HEADER_SESSION].value);
+    STATUS_OK(response);
+    response->headers[HEADER_SESSION].value = strdup(request->headers[HEADER_SESSION].value);
+
+    if (mpegio_clientid_get_parameters(rtsp_sess->streamer->mpegio, rtsp_sess->mpegio_client_id, NULL, &rtp_seq) == 0){
+	char *buf = xmalloc(64);
+	cook_rtsp_rtp_info(buf, 64, rs, rtp_seq);
+	response->headers[HEADER_RTP_INFO].value = buf;
+    } else {
+	log_error("can not get mpegio client %d parameters", rtsp_sess->mpegio_client_id);
     }
 
     return 0;
@@ -952,6 +981,7 @@ void mpegio_send_error_handler(void *param, uint32_t ssrc, int in_errno)
 	if (sess->send_errors > 5){
 	    log_warning("deactivating session %llu, too many consequent send errors", sess->session_id);
 	    mpegio_clientid_set_active(sess->streamer->mpegio, sess->mpegio_client_id, 0);
+	    sess->playing = 0;
 	}
     }
 }
@@ -1032,7 +1062,7 @@ struct rtsp_session *rtsp_setup_session(THIS, struct in_addr *client_addr, struc
     memcpy(&sess->addr, client_addr, sizeof(struct in_addr));
     sess->client_port_lo = transp->client_port_lo;
     sess->client_port_hi = transp->client_port_hi;
-    sess->rtcp_latest_activity = ev_now(evloop);
+    sess->latest_activity = ev_now(evloop);
 
     sess->streamer = streamer;
 
@@ -1221,7 +1251,7 @@ static void ev_rtcp_input_handler(struct ev_loop *loop, ev_io *w, int revents)
 		    log_debug("got rr for unknown ssrc %08x", ntohl(rr->ssrc));
 		} else {
 		    int jitter = ntohl(rr->interarrival_jitter);
-		    sess->rtcp_latest_activity = ev_now(evloop);
+		    sess->latest_activity = ev_now(evloop);
 		    sess->rtcp_reported_packet_loss = RTCP_RR_CUMULATIVE_LOST(rr);
 
 		    if (rr->fraction_lost || jitter >= WARN_JITTER_VALUE_RTCP_RR){
@@ -1304,7 +1334,7 @@ static void ev_sess_check_timeout_handler(struct ev_loop *loop, ev_timer *w, int
     ev_tstamp timeouted = ev_now(evloop) - NO_RTCP_SESSION_TIMEOUT;
 
     while ((item = ht_iterate(&this->sess_htiter, &iterstate, &buckets_limit)) != NULL){
-	if (item->rtcp_latest_activity < timeouted){
+	if (item->latest_activity < timeouted){
 
 	    ht_remove(&this->sess_id_ht, item, htfunc_session, htfunc_session_cmp);
 	    rtsp_free_session(this, item);

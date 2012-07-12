@@ -310,3 +310,15 @@ struct rtsp_requested_stream *parse_requested_stream(char *in_text, int len)
     free(buf);
     return rs;
 }
+
+/**********************************************************************************/
+
+int cook_rtsp_rtp_info(char *dstbuf, int bufsize, struct rtsp_requested_stream *rs, uint32_t rtp_seq)
+{
+    if (rs->query && rs->query[0])
+	snprintf(dstbuf, bufsize, "url=rtsp://%s/%s?%s;seq=%d", rs->hostname, rs->path, rs->query, rtp_seq);
+    else
+	snprintf(dstbuf, bufsize, "url=rtsp://%s/%s;seq=%d", rs->hostname, rs->path, rtp_seq);
+    log_info("rtp-info: %s", dstbuf);
+    return 0;
+}
