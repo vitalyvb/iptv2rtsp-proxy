@@ -319,6 +319,5 @@ int cook_rtsp_rtp_info(char *dstbuf, int bufsize, struct rtsp_requested_stream *
 	snprintf(dstbuf, bufsize, "url=rtsp://%s/%s?%s;seq=%d", rs->hostname, rs->path, rs->query, rtp_seq);
     else
 	snprintf(dstbuf, bufsize, "url=rtsp://%s/%s;seq=%d", rs->hostname, rs->path, rtp_seq);
-    log_info("rtp-info: %s", dstbuf);
     return 0;
 }

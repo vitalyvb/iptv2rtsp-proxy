@@ -593,6 +593,7 @@ static int mpegio_input_handler(THIS)
 
 	    if (diff > 0.2){
 		log_warning("delay between packets is too large: %f, resetting", diff);
+		descr_release(this, d);
 		this->time_recv_started = 0.0;
 		this->time_recv_send = 0.0;
 		ring_buffer_release(this);

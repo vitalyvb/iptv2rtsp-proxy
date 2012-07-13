@@ -85,6 +85,7 @@ struct rtsp_session {
 
     ev_tstamp latest_activity;
     int rtcp_reported_packet_loss;
+    int have_rtcp_reports;
 };
 
 struct rtsp_server {
@@ -398,13 +399,30 @@ static void process_responses(ebb_connection *_connection)
 #define STATUS_NOT_IMPLEMENTED(_r_)	RTSP_SET_STATUS((_r_), 501, "Not Implemented")
 #define STATUS_BAD_VERSION(_r_)		RTSP_SET_STATUS((_r_), 505, "RTSP Version Not Supported")
 
-static int rtsp_method_options(struct client_request *request, struct server_response *response, struct rtsp_requested_stream *rs)
+static int rtsp_check_session(struct client_request *request, struct server_response *response, struct rtsp_requested_stream *rs)
 {
     struct client_connection *connection = request->connection;
     RTSP rtsp_server = connection->rtsp_server;
     rtsp_session_id sess_id;
     struct rtsp_session *rtsp_sess;
 
+    if (request->headers[HEADER_SESSION].value && 
+	    parse_rtsp_session_id(request->headers[HEADER_SESSION].value, &sess_id) == 0){
+
+	rtsp_sess = rtsp_session_get(rtsp_server, &sess_id);
+	if (rtsp_sess){
+	    rtsp_sess->latest_activity = ev_now(evloop);
+	    response->headers[HEADER_SESSION].value = strdup(request->headers[HEADER_SESSION].value);
+	    return 0;
+	}
+	return -1;
+    }
+
+    return 0;
+}
+
+static int rtsp_method_options(struct client_request *request, struct server_response *response, struct rtsp_requested_stream *rs)
+{
     /* we do not support any options (yet) */
     if (response->headers[HEADER_REQUIRE].value || response->headers[HEADER_PROXY_REQUIRE].value){
 	RTSP_SET_STATUS(response, 551, "Option not supported")
@@ -419,14 +437,7 @@ static int rtsp_method_options(struct client_request *request, struct server_res
 	//response->headers[HEADER_PUBLIC].value = strdup("OPTIONS, DESCRIBE, SETUP, TEARDOWN, PLAY, PAUSE");
 	response->headers[HEADER_PUBLIC].value = strdup("OPTIONS, DESCRIBE, SETUP, TEARDOWN, PLAY");
 
-	if (request->headers[HEADER_SESSION].value && 
-		parse_rtsp_session_id(request->headers[HEADER_SESSION].value, &sess_id) == 0){
-	    rtsp_sess = rtsp_session_get(rtsp_server, &sess_id);
-	    if (rtsp_sess){
-		rtsp_sess->latest_activity = ev_now(evloop);
-		response->headers[HEADER_SESSION].value = strdup(request->headers[HEADER_SESSION].value);
-	    }
-	}
+	rtsp_check_session(request, response, rs);
     }
 
     return 0;
@@ -574,6 +585,8 @@ static int rtsp_method_play(struct client_request *request, struct server_respon
 	return 0;
     }
 
+    rtsp_sess->latest_activity = ev_now(evloop);
+
     if (!rtsp_sess->playing){
 	rtsp_sess->playing = 1;
 	rtsp_session_play(rtsp_server, rtsp_sess, rs);
@@ -657,6 +670,10 @@ static void request_complete(ebb_request *_request)
 		request->ebb.method != EBB_SETUP &&
 		request->ebb.method != EBB_DESCRIBE &&
 		request->ebb.method != EBB_TEARDOWN) {
+	struct rtsp_requested_stream *rs = parse_requested_stream(request->uri, strlen(request->uri));
+	rtsp_check_session(request, response, rs);
+	free_requested_stream(rs);
+
 	STATUS_NOT_IMPLEMENTED(response);
     } else if ((request->ebb.method == EBB_PLAY ||
 		request->ebb.method == EBB_PAUSE ||
@@ -1253,6 +1270,7 @@ static void ev_rtcp_input_handler(struct ev_loop *loop, ev_io *w, int revents)
 		    int jitter = ntohl(rr->interarrival_jitter);
 		    sess->latest_activity = ev_now(evloop);
 		    sess->rtcp_reported_packet_loss = RTCP_RR_CUMULATIVE_LOST(rr);
+		    sess->have_rtcp_reports = 1;
 
 		    if (rr->fraction_lost || jitter >= WARN_JITTER_VALUE_RTCP_RR){
 			log_info("rtcp report: session %llu, loss rate since last report: %d/256, %d total, interarrival jitter: %d",
@@ -1331,15 +1349,21 @@ static void ev_sess_check_timeout_handler(struct ev_loop *loop, ev_timer *w, int
     struct rtsp_session *item;
     int buckets_limit = bucket_per_iteration;
 
-    ev_tstamp timeouted = ev_now(evloop) - NO_RTCP_SESSION_TIMEOUT;
+    ev_tstamp sess_timeouted = ev_now(evloop) - RTSP_SESSION_TIMEOUT;
+    ev_tstamp rtcp_timeouted = ev_now(evloop) - NO_RTCP_SESSION_TIMEOUT;
 
     while ((item = ht_iterate(&this->sess_htiter, &iterstate, &buckets_limit)) != NULL){
-	if (item->latest_activity < timeouted){
+	if (item->latest_activity < sess_timeouted){
 
 	    ht_remove(&this->sess_id_ht, item, htfunc_session, htfunc_session_cmp);
 	    rtsp_free_session(this, item);
 
+	} else if (item->have_rtcp_reports && item->latest_activity < rtcp_timeouted){
+
+	    ht_remove(&this->sess_id_ht, item, htfunc_session, htfunc_session_cmp);
+	    rtsp_free_session(this, item);
 	}
+
 	if (ht_iterator_is_bucket_end(&this->sess_htiter, &iterstate) && buckets_limit <= 0){
 	    break;
 	}
