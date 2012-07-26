@@ -118,6 +118,7 @@ struct mpegio_stream {
     struct mpegio_client *clients_list;
     struct mpegio_client *clients_tail;
     int active_clients;
+    int clients;
 
     /* stream information */
     PSI psi;
@@ -328,8 +329,8 @@ static void handle_send_error(THIS, int fd)
 
     res = recvmsg(fd, &msg, MSG_ERRQUEUE | MSG_DONTWAIT);
 
-    if (res < 0) {
-	log_error("recvmsg MSG_ERRQUEUE failed %d %d", res, errno);
+    if (res <= 0) {
+	log_debug("recvmsg MSG_ERRQUEUE failed with:%d errno:%d", res, errno);
 	return;
     }
 
@@ -396,7 +397,7 @@ static void send_to_clients(THIS, uint8_t *buffer, int length, uint32_t timestam
      *    http://wiki.ipxwarzone.com/index.php5?title=Linux_packet_mmap
      */
     while (client){
-	if (!client->active){
+	if (client->active != MPEGIO_CLIENT_PLAY){
 	    client = client->next;
 	    continue;
 	}
@@ -773,14 +774,13 @@ void mpegio_set_active(THIS, int active)
 	log_info("pausing");
 	this->inactive_since = ev_now(evloop);
 	multicast_group_leave(this->recv_fd, &this->addr);
-	ev_timer_start(evloop, &this->suicide_timer);
     }
     this->active = active;
 }
 
 void mpegio_clients_active_changed(THIS)
 {
-    log_info("active clients: %d", this->active_clients);
+    log_info("clients: %d active: %d", this->clients, this->active_clients);
     if (this->active_clients > 0) {
 	if (!this->active){
 	    mpegio_set_active(this, 1);
@@ -883,6 +883,10 @@ int mpegio_clientid_destroy(THIS, int client_id)
 	return 0;
     }
 
+    this->clients--;
+    if (this->clients == 0)
+	ev_timer_start(evloop, &this->suicide_timer);
+
     if (client->active){
 	client->active = 0;
 	this->active_clients--;
@@ -902,6 +906,7 @@ int mpegio_clients_free_all(THIS)
 	mpegio_clientid_destroy(this, this->clients_list->id);
     }
     assert(this->active_clients == 0);
+    assert(this->clients == 0);
     return 0;
 }
 
@@ -932,6 +937,8 @@ struct mpegio_client *mpegio_client_create(THIS, struct in_addr *dest, uint16_t 
 	this->clients_list = client;
 	this->clients_tail = client;
     }
+
+    this->clients++;
 
     return client;
 }

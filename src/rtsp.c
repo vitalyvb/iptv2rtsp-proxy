@@ -125,6 +125,7 @@ struct rtsp_session *rtsp_setup_session(THIS, struct in_addr *client_addr, struc
 
 static struct rtsp_session *rtsp_session_get(THIS, rtsp_session_id *session_id);
 static int rtsp_session_play(THIS, struct rtsp_session *sess, struct rtsp_requested_stream *rs);
+static int rtsp_session_pause(THIS, struct rtsp_session *sess, struct rtsp_requested_stream *rs);
 static int rtsp_session_set_ssrc_hash(THIS, struct rtsp_session *sess, uint32_t ssrc);
 static int rtsp_session_all_ssrc_hash_remove(THIS, struct rtsp_session *sess);
 static void rtsp_destroy_session(THIS, rtsp_session_id *session_id);
@@ -342,7 +343,6 @@ void client_request_free(struct client_request *request)
 }
 
 /************************************************************************/
-
 static void process_responses(ebb_connection *_connection)
 {
     struct client_connection *connection = (struct client_connection*)_connection;
@@ -357,7 +357,9 @@ static void process_responses(ebb_connection *_connection)
 	/* headers sent, send body */
 	response->body_sent = 1;
 	res = ebb_connection_write(EBB(connection), response->body, response->body_length, process_responses);
-	assert(res);
+	/* Connection broke after previous ebb_connection_write() call and will be closed soon.
+	 * Ignore error.
+	 */
 	return;
     } else if (response->head_sent && (response->body_length == 0 || response->body_sent)){
 	/* done, release this response */
@@ -381,7 +383,7 @@ static void process_responses(ebb_connection *_connection)
 
 	response->head_sent = 1;
 	res = ebb_connection_write(EBB(connection), response->head, response->head_length, process_responses);
-	assert(res);
+	/* same as above regarding error handling */
     }
 }
 
@@ -434,8 +436,7 @@ static int rtsp_method_options(struct client_request *request, struct server_res
     } else {
 	STATUS_OK(response);
 
-	//response->headers[HEADER_PUBLIC].value = strdup("OPTIONS, DESCRIBE, SETUP, TEARDOWN, PLAY, PAUSE");
-	response->headers[HEADER_PUBLIC].value = strdup("OPTIONS, DESCRIBE, SETUP, TEARDOWN, PLAY");
+	response->headers[HEADER_PUBLIC].value = strdup("OPTIONS, DESCRIBE, SETUP, TEARDOWN, PLAY, PAUSE");
 
 	rtsp_check_session(request, response, rs);
     }
@@ -534,6 +535,9 @@ static int rtsp_method_setup(struct client_request *request, struct server_respo
 
 	response->headers[HEADER_SESSION].value = xmalloc(32);
 	cook_rtsp_session_id(response->headers[HEADER_SESSION].value, 32, &rtsp_sess->session_id);
+	/* 60 sec is a default but specifying this explicitly somehow breaks (some) clients */
+	/* also, some clients ignore it */
+	/* strcat(response->headers[HEADER_SESSION].value, ";timeout=60"); */
 
 	log_info("client %s connection id: %d, created new session %llu", connection->client_addr_str, connection->connection_id, rtsp_sess->session_id);
     } else {
@@ -553,7 +557,7 @@ static int rtsp_method_teardown(struct client_request *request, struct server_re
     rtsp_session_id sess_id = 0;
 
     if (parse_rtsp_session_id(request->headers[HEADER_SESSION].value, &sess_id)){
-	log_warning("invalid session header");
+	log_warning("invalid session header: '%s'", request->headers[HEADER_SESSION].value);
 	STATUS_SESS_NOT_FOUND(response);
 	return 0;
     }
@@ -573,7 +577,7 @@ static int rtsp_method_play(struct client_request *request, struct server_respon
     uint32_t rtp_seq;
 
     if (parse_rtsp_session_id(request->headers[HEADER_SESSION].value, &sess_id)){
-	log_warning("invalid session header");
+	log_warning("invalid session header: '%s'", request->headers[HEADER_SESSION].value);
 	STATUS_SESS_NOT_FOUND(response);
 	return 0;
     }
@@ -608,7 +612,35 @@ static int rtsp_method_play(struct client_request *request, struct server_respon
 
 static int rtsp_method_pause(struct client_request *request, struct server_response *response, struct rtsp_requested_stream *rs)
 {
-    STATUS_NOT_IMPLEMENTED(response);
+    struct client_connection *connection = request->connection;
+    RTSP rtsp_server = connection->rtsp_server;
+    rtsp_session_id sess_id = 0;
+    struct rtsp_session *rtsp_sess;
+    uint32_t rtp_seq;
+
+    if (parse_rtsp_session_id(request->headers[HEADER_SESSION].value, &sess_id)){
+	log_warning("invalid session header: '%s'", request->headers[HEADER_SESSION].value);
+	STATUS_SESS_NOT_FOUND(response);
+	return 0;
+    }
+
+    rtsp_sess = rtsp_session_get(rtsp_server, &sess_id);
+    if (!rtsp_sess){
+	log_warning("session %s(%llu) not found", request->headers[HEADER_SESSION].value, sess_id);
+	STATUS_SESS_NOT_FOUND(response);
+	return 0;
+    }
+
+    rtsp_sess->latest_activity = ev_now(evloop);
+
+    if (rtsp_sess->playing){
+	rtsp_sess->playing = 0;
+	rtsp_session_pause(rtsp_server, rtsp_sess, rs);
+    }
+
+    STATUS_OK(response);
+    response->headers[HEADER_SESSION].value = strdup(request->headers[HEADER_SESSION].value);
+
     return 0;
 }
 
@@ -864,14 +896,30 @@ void on_close(ebb_connection *_connection)
 {
     struct client_connection *connection = (struct client_connection*)_connection;
     log_info("connection id %d closed", connection->connection_id);
+    struct server_response *response;
 
     // XXX todo
-    // FIXME there can be requests or something in progress referencing connection
+    // FIXME check if there are requests or something in progress referencing the connection
+
+    response = connection->response_list;
+    while (response){
+	struct server_response *next = response->next;
+	server_response_free(response);
+	response = next;
+    }
+
+    connection->response_list = NULL;
+    connection->response_tail = NULL;
+
     free(connection);
 }
 
 int on_timeout(ebb_connection *connection)
 {
+    /* XXX TODO: make some connections to timeout, like
+     * - connections without valid session requests
+     * - probably others
+     */
     // never timeout
     return EBB_AGAIN;
 }
@@ -997,7 +1045,8 @@ void mpegio_send_error_handler(void *param, uint32_t ssrc, int in_errno)
 
 	if (sess->send_errors > 5){
 	    log_warning("deactivating session %llu, too many consequent send errors", sess->session_id);
-	    mpegio_clientid_set_active(sess->streamer->mpegio, sess->mpegio_client_id, 0);
+	    // XXX do something with _session_
+	    mpegio_clientid_set_active(sess->streamer->mpegio, sess->mpegio_client_id, MPEGIO_CLIENT_STOP);
 	    sess->playing = 0;
 	}
     }
@@ -1186,7 +1235,29 @@ int rtsp_session_play(THIS, struct rtsp_session *sess, struct rtsp_requested_str
 
     mpegio = streamer->mpegio;
 
-    mpegio_clientid_set_active(mpegio, sess->mpegio_client_id, 1);
+    mpegio_clientid_set_active(mpegio, sess->mpegio_client_id, MPEGIO_CLIENT_PLAY);
+
+    return 0;
+}
+
+int rtsp_session_pause(THIS, struct rtsp_session *sess, struct rtsp_requested_stream *rs)
+{
+    struct rtsp_mpegio_streamer *streamer;
+    MPEGIO mpegio;
+    struct mpegio_config conf;
+
+
+    if (requested_stream_to_mpegio_key(this, rs, &conf)){
+	return -1;
+    }
+
+    streamer = sess->streamer;
+
+    /* xxx compare streamer conf and rs conf */
+
+    mpegio = streamer->mpegio;
+
+    mpegio_clientid_set_active(mpegio, sess->mpegio_client_id, MPEGIO_CLIENT_STOP);
 
     return 0;
 }
@@ -1358,10 +1429,11 @@ static void ev_sess_check_timeout_handler(struct ev_loop *loop, ev_timer *w, int
 	    ht_remove(&this->sess_id_ht, item, htfunc_session, htfunc_session_cmp);
 	    rtsp_free_session(this, item);
 
-	} else if (item->have_rtcp_reports && item->latest_activity < rtcp_timeouted){
+	} else if (item->have_rtcp_reports && item->playing && item->latest_activity < rtcp_timeouted){
 
 	    ht_remove(&this->sess_id_ht, item, htfunc_session, htfunc_session_cmp);
 	    rtsp_free_session(this, item);
+
 	}
 
 	if (ht_iterator_is_bucket_end(&this->sess_htiter, &iterstate) && buckets_limit <= 0){

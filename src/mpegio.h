@@ -27,6 +27,9 @@ struct mpegio_config {
 
 #define MPEGIO_KEY_SIZE (offsetof(struct mpegio_config, __key_end))
 
+#define MPEGIO_CLIENT_STOP (0)
+#define MPEGIO_CLIENT_PLAY (1)
+
 int mpegio_configure(MPEGIO _this, const struct mpegio_config *config);
 MPEGIO mpegio_alloc();
 int mpegio_init(MPEGIO);
