@@ -164,7 +164,7 @@ static void psi_cleanup_pids(THIS)
     int ht;
 
     /* release data from hash table */
-    for (ht=0; ht<PSI_PID_HASHMASK; ht++){
+    for (ht=0; ht<(PSI_PID_HASHMASK+1); ht++){
 	psi_cleanup_pids_list(this, this->pids_info[ht]);
 	this->pids_info[ht] = NULL;
     }
@@ -192,7 +192,7 @@ static void psi_cleanup_reassem(THIS)
     int ht;
 
     /* release data from hash table */
-    for (ht=0; ht<SECT_REASSEMBL_HASHMASK; ht++){
+    for (ht=0; ht<(SECT_REASSEMBL_HASHMASK+1); ht++){
 	psi_cleanup_reassem_list(this, this->reassemply_hash[ht]);
 	this->reassemply_hash[ht] = NULL;
     }
@@ -338,7 +338,7 @@ void psi_pids_flush(THIS)
 {
     int i;
 
-    for (i=0;i<PSI_PID_HASHMASK+1;i++){
+    for (i=0;i<(PSI_PID_HASHMASK+1);i++){
 	if (this->pids_info[i]){
 	    this->pids_info[i]->next = this->pids_pool;
 	    this->pids_pool = this->pids_info[i];
