@@ -518,7 +518,7 @@ static void mpegio_output_handler(THIS)
     }
 }
 
-static int cc_checker(THIS, int pid, int cc)
+static int cc_checker(THIS, int pid, int payload_present, int cc)
 {
     int expect;
 
@@ -528,11 +528,10 @@ static int cc_checker(THIS, int pid, int cc)
     assert(sizeof(this->cc_check[0]) == 1);
 
     if (this->cc_check[pid].active){
-	/* some encoders do not increase CC when they insert PCRs
-	 * into the stream, so assume 'current' value is valid too
+	/* Incremented only if payload is present
 	 */
-	expect = MPEG_HDR_CNT_NEXT(this->cc_check[pid].cc);
-	if (expect != cc && this->cc_check[pid].cc != cc){
+	expect = MPEG_HDR_CNT_NEXT(this->cc_check[pid].cc - 1*(!payload_present));
+	if (expect != cc){
 	    log_warning("TS discontinuity (received %d, expected %d) for PID %d", cc, expect, pid);
 	}
     } else {
@@ -639,7 +638,7 @@ static int mpegio_input_handler(THIS)
 		    continue;
 		}
 
-		cc_checker(this, pid, MPEG_HDR_CNT(&buf[pos]));
+		cc_checker(this, pid, MPEG_HDR_PD(&buf[pos]), MPEG_HDR_CNT(&buf[pos]));
 
 		if (pid == MPEG_PID_PAT) {
 		    psi_submit_for_reassemply(this->psi, pid, PSI_PID_PAT_FLAGS, &buf[pos]);
