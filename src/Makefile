@@ -30,27 +30,30 @@ OBJS = $(SRCS:.c=.o)
 
 default: iptv2rtsp-proxy
 
+help:
+	@$(showhelp)
+
 ht.o: ht.c ht.h
 
 iptv2rtsp-proxy: $(OBJS) iniparser/libiniparser.a libev/libev.a libebb/libebb.a
 	$(LD) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
 iniparser/libiniparser.a:
-	make -C iniparser libiniparser.a
+	$(MAKE) -C iniparser libiniparser.a
 
 libebb/libebb.a:
-	make -C libebb libebb.a
+	$(MAKE) -C libebb libebb.a
 
 libev/libev.a:
-	make -C libev libev.a
+	$(MAKE) -C libev libev.a
 
 clean:
 	$(RM) *.o iptv2rtsp-proxy
 
 cleanall:
-	make -C iniparser veryclean
-	make -C libebb clean
-	make -C libev clean
+	$(MAKE) -C iniparser veryclean
+	$(MAKE) -C libebb clean
+	$(MAKE) -C libev clean
 	$(RM) *.o iptv2rtsp-proxy
 
-.PHONY: default clean cleanall
+.PHONY: default help clean cleanall

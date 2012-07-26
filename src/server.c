@@ -40,7 +40,11 @@
 #include <sys/select.h>
 #include <sys/time.h>
 #include <arpa/inet.h>
-#include <pthread.h>
+#ifdef USE_PTHREADS
+# include <pthread.h>
+#else
+# include <sched.h>
+#endif
 #include <pwd.h>
 #include <grp.h>
 
@@ -141,7 +145,7 @@ void log_message(int level, const char *module, const char *module_dyn, const ch
 	} else {
 	    strcpy(&p[-4], "...\n");
 	}
-	fwrite(buf, sizeof(char), p-buf, stderr);
+	res = fwrite(buf, sizeof(char), p-buf, stderr);
     }
     va_end (args);
 }
@@ -249,6 +253,7 @@ static void setup_io_prio()
     struct sched_param sched_param;
     int res;
 
+#ifdef USE_PTHREADS
     if (io_sched_realtime){
 	sched_param.sched_priority = 10;
 	res = pthread_setschedparam(pthread_self(), SCHED_FIFO, &sched_param);
@@ -267,6 +272,26 @@ static void setup_io_prio()
 	    "UNK",
 	    sched_param.sched_priority);
     }
+#else
+
+    if (io_sched_realtime){
+	sched_param.sched_priority = 10;
+	res = sched_setscheduler(0, SCHED_FIFO, &sched_param);
+	if (res){
+	    log_error("error setting realtime priority: %m");
+	}
+    }
+
+    policy = sched_getscheduler(0);
+    if (policy >= 0){
+	log_info("IO sched: %s",
+	    (policy == SCHED_FIFO) ? "FIFO" :
+	    (policy == SCHED_RR) ? "RR" :
+	    (policy == SCHED_OTHER) ? "OTHER" :
+	    "UNK");
+    }
+
+#endif
 }
 
 static void sig_term_cb(struct ev_loop *loop, ev_signal *w, int revents)
