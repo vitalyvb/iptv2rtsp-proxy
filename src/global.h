@@ -85,6 +85,7 @@
 /***************************************************/
 
 void log_message(int level, const char *module, const char *module_dyn, const char *msg, ...);
+void log_data(int level, const char *module, const char *module_dyn, const char *msg, const void *data, int len);
 
 #ifndef LOG_MODULE
 # define LOG_MODULE "global"
@@ -95,6 +96,11 @@ void log_message(int level, const char *module, const char *module_dyn, const ch
 #define log_warning(msg...) log_message(LOG_WARNING, LOG_MODULE, LOG_PARAM, msg)
 #define log_info(msg...) log_message(LOG_INFO, LOG_MODULE, LOG_PARAM, msg)
 #define log_debug(msg...) if (unlikely(debug)) log_message(LOG_DEBUG, LOG_MODULE, LOG_PARAM, msg)
+
+#define log_error_data(msg, data, len) log_data(LOG_ERR, LOG_MODULE, LOG_PARAM, msg": %s", data, len)
+#define log_warning_data(msg, data, len) log_data(LOG_WARNING, LOG_MODULE, LOG_PARAM, msg": %s", data, len)
+#define log_info_data(msg, data, len) log_data(LOG_INFO, LOG_MODULE, LOG_PARAM, msg": %s", data, len)
+#define log_debug_data(msg, data, len) if (unlikely(debug)) log_data(LOG_DEBUG, LOG_MODULE, LOG_PARAM, msg": %s", data, len)
 
 /***************************************************/
 

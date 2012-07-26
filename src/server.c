@@ -103,7 +103,7 @@ void log_message(int level, const char *module, const char *module_dyn, const ch
     va_list args;
     va_start (args, msg);
 
-    p = buf = alloca(buffree);
+    p = buf = alloca(buffree+1);
 
     if (!log_to_stderr){
 	if (module_dyn)
@@ -124,9 +124,10 @@ void log_message(int level, const char *module, const char *module_dyn, const ch
     res = vsnprintf(p, buffree, msg, args);
     if (res < 0)
 	return;
+    if (res > buffree)
+	res = buffree;
     buffree -= res;
     p += res;
-
 
     /* TODO protect with a mutex */
     if (!log_to_stderr){
@@ -137,10 +138,43 @@ void log_message(int level, const char *module, const char *module_dyn, const ch
 	    p[1] = 0;
 	    buffree -= 1;
 	    p++;
+	} else {
+	    strcpy(&p[-4], "...\n");
 	}
 	fwrite(buf, sizeof(char), p-buf, stderr);
     }
     va_end (args);
+}
+
+void log_data(int level, const char *module, const char *module_dyn, const char *msg, const void *_data, int len)
+{
+#define BUFLEN (128*3)
+    const unsigned char *data = (const unsigned char *)_data;
+    char buf[BUFLEN+1];
+    int i, chars, bufpos=0;
+
+    if (data == NULL) {
+	strcpy(buf, "(null)");
+    } else if (len <= 0) {
+	strcpy(buf, "NONE");
+    } else if (len > 0) {
+	for (i=0; i<len-1; i++){
+	    chars = snprintf(&buf[bufpos], BUFLEN-bufpos, "%02x ", data[i]);
+	    if (chars < 0)
+		return;
+	    bufpos += chars;
+	    if (bufpos >= BUFLEN-8){
+		strncpy(&buf[bufpos], "...", BUFLEN-bufpos);
+		buf[BUFLEN] = 0;
+		bufpos = BUFLEN;
+		break;
+	    }
+	}
+	snprintf(&buf[bufpos], BUFLEN-bufpos, "%02x", data[i]);
+    }
+
+    log_message(level, module, module_dyn, msg, buf);
+#undef BUFLEN
 }
 
 static void get_pw_uids(char *nopriv_uid_name, char *nopriv_gid_name)

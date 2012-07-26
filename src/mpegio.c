@@ -349,10 +349,10 @@ static void handle_send_error(THIS, int fd)
 	    }
 
 	    if (eerr->ee_origin != SO_EE_ORIGIN_NONE && eerr->ee_errno != 0){
-		log_warning("extended error errno: %d origin: %d type: %d code: %d reported by: %s data: %*T",
+		log_warning("extended error errno: %d origin: %d type: %d code: %d reported by: %s",
 		    eerr->ee_errno, eerr->ee_origin, eerr->ee_type, eerr->ee_code,
-		    ipaddr,
-		    (res>16)?16:res, data);
+		    ipaddr);
+		log_warning_data("extended error errno: data", data, (res>16)?16:res);
 
 		handle_error_report_packet(this, (struct sockaddr *)&sockaddr, eerr->ee_origin, data, res);
 		break;

@@ -110,50 +110,6 @@ int crc32_check(const uint8_t *data, size_t len, uint32_t crc)
 
 /************************************************************************/
 
-static int printf_t_handler(FILE *stream, const struct printf_info *info, const void *const *args)
-{
-    const unsigned char *data;
-    int datasize = info->width;
-    int len = 0;
-    int i;
-
-    data = *((const unsigned char **) (args[0]));
-
-    if (datasize > 0) {
-	for (i=0; i<datasize-1; i++){
-	    len += fprintf(stream, "%02x ", data[i]);
-	}
-	len += fprintf(stream, "%02x", data[datasize-1]);
-    }
-
-    return len;
-}
-
-static int printf_t_arginfo (const struct printf_info *info, size_t n, int *argtypes, int *size)
-{
-    if (n > 0){
-	if (info->width == 0) {
-	    argtypes[0] = PA_POINTER;
-	    size[0] = 0;
-	} else {
-	    argtypes[0] = PA_POINTER;
-	    size[0] = (info->width*3)-1;
-	}
-
-	return 1;
-    }
-
-    return 0;
-}
-
-
-static void  __attribute__ ((constructor)) register_custom_printf()
-{
-    register_printf_specifier('T', printf_t_handler, printf_t_arginfo);
-}
-
-/************************************************************************/
-
 int setnonblocking(int fd)
 {
     int fl;

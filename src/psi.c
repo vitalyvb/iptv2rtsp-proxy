@@ -894,9 +894,9 @@ static void mpeg_psi_pmt(THIS, uint16_t pid, uint8_t *data, int data_len)
 	    //case descriptor_id_CA:
 		//break;
 	    default:
-		log_info("\t tag: 0x%02x, data: %*T", descriptor_hdr->descriptor_tag,
-			descriptor_hdr->descriptor_length,
-			((char*)descriptor_hdr) + DESCR_MIN_LEN);
+		log_info("\t tag: 0x%02x", descriptor_hdr->descriptor_tag);
+		log_info_data("\t     data", ((char*)descriptor_hdr) + DESCR_MIN_LEN,
+			descriptor_hdr->descriptor_length);
 	}
 
 	pmti_offs += DESCR_MIN_LEN + descriptor_hdr->descriptor_length;
@@ -951,9 +951,9 @@ static void mpeg_psi_pmt(THIS, uint16_t pid, uint8_t *data, int data_len)
 		//case descriptor_id_CA:
 		    //break;
 		default:
-		    log_info("\t\t tag: 0x%02x, data: %*T", descriptor_hdr->descriptor_tag,
-			    descriptor_hdr->descriptor_length,
-			    ((char*)descriptor_hdr) + sizeof(struct descriptor_hdr));
+		    log_info("\t\t tag: 0x%02x", descriptor_hdr->descriptor_tag);
+		    log_info_data("\t\t     data", ((char*)descriptor_hdr) + sizeof(struct descriptor_hdr),
+			    descriptor_hdr->descriptor_length);
 	    }
 	    desc_offs += sizeof(struct descriptor_hdr) + descriptor_hdr->descriptor_length;
 	}

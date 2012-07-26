@@ -50,8 +50,10 @@
 
 int cook_rtsp_session_id(char *dstbuf, int bufsize, rtsp_session_id *sess_id)
 {
+    int res;
     assert(sizeof(long long unsigned int) == sizeof(rtsp_session_id));
-    return snprintf(dstbuf, bufsize, "%llu", (long long unsigned int)*sess_id);
+    res = snprintf(dstbuf, bufsize, "%llu", (long long unsigned int)*sess_id);
+    return res <= bufsize ? res : -1;
 }
 
 int parse_rtsp_session_id(char *buf, rtsp_session_id *sess_id)
