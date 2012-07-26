@@ -166,6 +166,8 @@ void convert_dvb_string(char *src, int src_len, char *dst, int dst_len)
 	for (i=0;dvb_encodings[i].idx>0;i++){
 	    if (extid == dvb_encodings[i].ext){
 		conv = this->dvbconv[dvb_encodings[i].idx];
+		s += 2;
+		ls -= 2;
 		break;
 	    }
 	}
@@ -176,6 +178,8 @@ void convert_dvb_string(char *src, int src_len, char *dst, int dst_len)
 	int enc = src[0];
 	if (enc > 0 && enc < this->dvbconv_count){
 	    conv = this->dvbconv[enc];
+	    s += 1;
+	    ls -= 1;
 	} else {
 	    conv = this->dvbconv[DVB_STR_ENC_DEFAULT];
 	}
