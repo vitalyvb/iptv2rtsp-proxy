@@ -24,7 +24,9 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <iconv.h>
+#ifdef HAVE_ICONV
+# include <iconv.h>
+#endif
 #include <errno.h>
 #include <ctype.h>
 
@@ -66,6 +68,18 @@ static const struct dvb_encodings dvb_encodings[] = {
 
     {-1, -1, NULL},
 };
+
+static void convert_dvb_string_fallback(const char *src, int src_len, char *dst, int dst_len)
+{
+    int len;
+
+    len = dst_len<src_len ? dst_len:src_len;
+    memcpy(dst, src, len);
+    if (len < dst_len)
+	dst[len] = 0;
+}
+
+#ifdef HAVE_ICONV
 
 struct csconv {
     int dvbconv_count;
@@ -124,16 +138,6 @@ void csconv_cleanup()
 	free(this->dvbconv);
 	this->dvbconv = NULL;
     }
-}
-
-void convert_dvb_string_fallback(char *src, int src_len, char *dst, int dst_len)
-{
-    int len;
-
-    len = dst_len<src_len ? dst_len:src_len;
-    memcpy(dst, src, len);
-    if (len < dst_len)
-	dst[len] = 0;
 }
 
 void convert_dvb_string(char *src, int src_len, char *dst, int dst_len)
@@ -226,3 +230,22 @@ void convert_dvb_string(char *src, int src_len, char *dst, int dst_len)
 	d[0] = 0;
 
 }
+
+#else /* ! HAVE_ICONV */
+
+int csconv_init()
+{
+    return 0;
+}
+
+void csconv_cleanup()
+{
+    /* do nothing */
+}
+
+void convert_dvb_string(char *src, int src_len, char *dst, int dst_len)
+{
+    convert_dvb_string_fallback(src, src_len, dst, dst_len);
+}
+
+#endif /* HAVE_ICONV */

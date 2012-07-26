@@ -16,6 +16,7 @@ LDFLAGS = -Wl,--as-needed
 LDLIBS = -lpthread
 
 CFLAGS += -DHT_INLINE
+CFLAGS += -DHAVE_ICONV
 
 #CFLAGS += -DNDEBUG
 CFLAGS += -DDEBUG
