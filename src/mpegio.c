@@ -62,13 +62,11 @@ struct pkt_descriptor {
     struct pkt_descriptor *next;
     ev_tstamp tv;
 
-    union {
-	struct s_mpeg {
-	    int packets;
-	    uint32_t stream_pos;
-	    uint8_t *data;
-	} mpeg;
-    };
+    struct s_mpeg {
+	int packets;
+	uint32_t stream_pos;
+	uint8_t *data;
+    } mpeg;
 };
 
 struct mpegio_client {

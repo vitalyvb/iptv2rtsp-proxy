@@ -75,7 +75,7 @@ struct pid_descriptor {
 	    uint16_t sid;
 	    uint8_t type;
 	} es;
-    };
+    } detail;
 };
 
 #define SDT_NAME_LEN (255)
@@ -652,7 +652,7 @@ static void mpeg_psi_pat(THIS, uint8_t *data, int data_len)
 
 	    d->pid = pid;
 	    d->flags = PSI_PID_PMT_FLAGS;
-	    d->pmt.program_number = MPEG_HILO(pat_prog->program_number);
+	    d->detail.pmt.program_number = MPEG_HILO(pat_prog->program_number);
 	    d->data_hash = 0;
 
 	    psi_pid_register(this, d);
@@ -661,7 +661,7 @@ static void mpeg_psi_pat(THIS, uint8_t *data, int data_len)
 		log_warning("pid %d flags change %x %x", pid, d->flags, PSI_PID_PMT_FLAGS);
 		d->flags = PSI_PID_PMT_FLAGS;
 	    }
-	    d->pmt.program_number = MPEG_HILO(pat_prog->program_number);
+	    d->detail.pmt.program_number = MPEG_HILO(pat_prog->program_number);
 	    /* do not touch data_hash on existing PMTs as it
 	     * will force to re-read PMT
 	     *
@@ -855,21 +855,21 @@ static void mpeg_psi_pmt(THIS, uint16_t pid, uint8_t *data, int data_len)
     d = psi_pid_lookup(this, pid);
 
     if (d){
-	if ((d->flags == PSI_PID_PMT_FLAGS) && (d->pmt.version == pmt->version_number) &&
+	if ((d->flags == PSI_PID_PMT_FLAGS) && (d->detail.pmt.version == pmt->version_number) &&
 		(d->data_hash == crc)){
 	    return;
 	}
 	d->pid = pid;
 	d->flags = PSI_PID_PMT_FLAGS;
 	d->data_hash = crc;
-	d->pmt.version = pmt->version_number;
+	d->detail.pmt.version = pmt->version_number;
     } else {
 	d = psi_pid_descriptor_alloc(this);
 
 	d->pid = pid;
 	d->flags = PSI_PID_PMT_FLAGS;
 	d->data_hash = crc;
-	d->pmt.version = pmt->version_number;
+	d->detail.pmt.version = pmt->version_number;
 
 	psi_pid_register(this, d);
     }
@@ -924,16 +924,16 @@ static void mpeg_psi_pmt(THIS, uint16_t pid, uint8_t *data, int data_len)
 	    d->flags = PSI_PID_TYPE_PES;
 	    d->data_hash = 0;
 
-	    d->es.sid = MPEG_HILO(pmt->program_number);
-	    d->es.type = pmt_info->stream_type;
+	    d->detail.es.sid = MPEG_HILO(pmt->program_number);
+	    d->detail.es.type = pmt_info->stream_type;
 
 	    psi_pid_register(this, d);
 	} else {
 	    d->flags = PSI_PID_TYPE_PES;
 	    d->data_hash = 0;
 
-	    d->es.sid = MPEG_HILO(pmt->program_number);
-	    d->es.type = pmt_info->stream_type;
+	    d->detail.es.sid = MPEG_HILO(pmt->program_number);
+	    d->detail.es.type = pmt_info->stream_type;
 	}
 
 	desc_offs = 0;

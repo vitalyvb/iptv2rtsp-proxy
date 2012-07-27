@@ -34,22 +34,17 @@ struct rtp_header {
 #define RTP_SOURCE_HZ_MP2T (90000)
 
 struct rtcp_header {
-    union {
-	struct {
 #if BYTE_ORDER == BIG_ENDIAN
-	    uint8_t	version:2;
-	    uint8_t	padding:1;
-	    uint8_t	reports_count:5;
+    uint8_t	version:2;
+    uint8_t	padding:1;
+    uint8_t	reports_count:5;
 #else
-	    uint8_t	reports_count:5;
-	    uint8_t	padding:1;
-	    uint8_t	version:2;
+    uint8_t	reports_count:5;
+    uint8_t	padding:1;
+    uint8_t	version:2;
 #endif
-	    uint8_t	packet_type:8;
-	    uint16_t	length4:16;
-	};
-	uint32_t	dw0;
-    };
+    uint8_t	packet_type:8;
+    uint16_t	length4:16;
     uint32_t	sender_ssrc;
 };
 
