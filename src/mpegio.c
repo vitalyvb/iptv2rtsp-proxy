@@ -67,6 +67,11 @@ struct pkt_descriptor {
 	uint32_t stream_pos;
 	uint8_t *data;
     } mpeg;
+
+    struct s_rtp {
+	int valid;
+	uint32_t timestamp;
+    } rtp;
 };
 
 struct mpegio_client {
@@ -414,7 +419,7 @@ static void send_to_clients(THIS, uint8_t *buffer, int length, uint32_t timestam
 	     * for this exact client - in fact it occured for some recent client 
 	     * for which sendto() returned success.
 	     *
-	     * Further error analysis if required to reliably determine a client this
+	     * Further error analysis is required to reliably determine a client this
 	     * error relates.
 	     */
 	    handle_send_error(this, this->send_fd);
@@ -456,12 +461,20 @@ static void mpegio_output_handler(THIS)
     }
 
     do {
+	uint32_t timestamp;
+
 	descr = this->descr_head;
 
 	if (verbose > 2)
 	    log_info("sending out packet %d %d", this->ringbuf_start, this->ringbuf_end);
 
-	send_to_clients(this, descr->mpeg.data, descr->mpeg.packets*MPEG_PKT_SIZE, ev_tstamp_to_mp2t_freq(descr->tv));
+	if (descr->rtp.valid) {
+	    timestamp = descr->rtp.timestamp;
+	} else {
+	    timestamp = ev_tstamp_to_mp2t_freq(descr->tv);
+	}
+
+	send_to_clients(this, descr->mpeg.data, descr->mpeg.packets*MPEG_PKT_SIZE, timestamp);
 
 	this->ringbuf_start += descr->mpeg.packets*MPEG_PKT_SIZE;
 	if (this->ringbuf_start+MPEG_PKT_SIZE > this->ringbuf_size){
@@ -562,6 +575,9 @@ static int mpegio_input_handler(THIS)
 	int new_ringbuf_end, dst_start;
 	int count = 0;
 	uint16_t pkt_flags, pid;
+	const struct rtp_header *rtp_header;
+	int rtp_input = 0;
+	uint32_t rtp_timestamp = 0;
 
 
 	d = descr_alloc(this);
@@ -603,6 +619,36 @@ static int mpegio_input_handler(THIS)
 
 	if (this->time_recv_started == 0.0) {
 	    this->time_recv_started = d->tv;
+	}
+
+	/* check and deal with rtp packets */
+	rtp_header = (struct rtp_header*)buf;
+	if (len > RTP_HEADER_SIZE && rtp_header->version == 2 &&
+		rtp_header->payload_type == RTP_PAYLOAD_TYPE_MP2T){
+	    pos = RTP_HEADER_SIZE + rtp_header->csrc_count*sizeof(uint32_t);
+
+	    if (rtp_header->extension){
+		uint32_t profile_specific_len;
+
+		if (pos + 4 >= len){
+		    /* invalid length */
+		    if (verbose > 1)
+			log_warning("invalid rtp packet");
+		    break;
+		}
+
+		profile_specific_len = ntohs(*(uint16_t*)(&buf[pos+2]));
+		pos += profile_specific_len*sizeof(uint32_t);
+	    }
+
+	    if (pos >= len){
+		/* invalid or empty packet */
+		if (verbose > 1)
+		    log_warning("invalid or empty rtp packet");
+		break;
+	    }
+	    rtp_input = 1;
+	    rtp_timestamp = ntohl(rtp_header->timestamp);
 	}
 
 	while (pos < len) {
@@ -666,6 +712,8 @@ static int mpegio_input_handler(THIS)
 			d->mpeg.packets = count;
 			d->mpeg.data = datastart;
 			d->mpeg.stream_pos = this->abs_stream_pos;
+			d->rtp.valid = rtp_input;
+			d->rtp.timestamp = rtp_timestamp;
 
 			descr_append(this, d);
 
@@ -705,6 +753,8 @@ static int mpegio_input_handler(THIS)
 	    d->mpeg.packets = count;
 	    d->mpeg.data = datastart;
 	    d->mpeg.stream_pos = this->abs_stream_pos;
+	    d->rtp.valid = rtp_input;
+	    d->rtp.timestamp = rtp_timestamp;
 
 	    descr_append(this, d);
 	} else {
