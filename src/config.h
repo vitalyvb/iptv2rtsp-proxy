@@ -24,6 +24,10 @@
 #define RTSP_SESS_HASHSIZE (0x100)
 #define RTSP_MPEGIO_HASHSIZE (0x40)
 
+#define RTP_CLIENT_PORT_BASE (2000) /* clients udp base port number, must be even */
+#define RTP_CLIENT_PORT_INCR (2) /* port increments if ports are used already, must be even */
+#define RTP_CLIENT_PORT_MAX (RTP_CLIENT_PORT_BASE + 1000) /* maximum port number when determining port for the client */
+
 /* psi */
 #define PSI_PID_HASHMASK (0xf)
 #define SECT_REASSEMBL_HASHMASK (0xf)

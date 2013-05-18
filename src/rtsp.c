@@ -444,6 +444,47 @@ static int rtsp_method_options(struct client_request *request, struct server_res
     return 0;
 }
 
+/* select unused client udp port number per ip basis */
+static int rtsp_suggest_client_port(struct client_request *request)
+{
+    struct client_connection *connection = request->connection;
+    RTSP rtsp_server = connection->rtsp_server;
+    struct rtsp_session *item;
+    struct ht_iterator iter;
+    void *iterstate = NULL;
+    int port = RTP_CLIENT_PORT_BASE;
+    int iter_limit = 1000;
+
+    ht_iterator_init(&iter, &rtsp_server->sess_id_ht);
+
+    while ((item = ht_iterate(&iter, &iterstate, NULL)) != NULL){
+	if (memcmp(&item->addr, &connection->client_addr.sin_addr, sizeof(item->addr)) == 0){
+
+	    if (port <= item->client_port_hi){
+		/* select maximum port number honoring required step */
+		if (port + RTP_CLIENT_PORT_INCR - 1 < item->client_port_hi)
+		    port = ((item->client_port_hi + 1) / RTP_CLIENT_PORT_INCR + 1) * RTP_CLIENT_PORT_INCR;
+		else
+		    port = port + RTP_CLIENT_PORT_INCR;
+	    }
+	}
+
+	if (port > RTP_CLIENT_PORT_MAX){
+	    log_warning("can not suggest port number to the client, port limit reached");
+	    port = RTP_CLIENT_PORT_BASE;
+	    break;
+	}
+
+	if (iter_limit-- <= 0){
+	    log_warning("can not suggest port number to the client, time limit reached");
+	    port = RTP_CLIENT_PORT_BASE;
+	    break;
+	}
+    }
+
+    return port;
+}
+
 static int rtsp_method_describe(struct client_request *request, struct server_response *response, struct rtsp_requested_stream *rs)
 {
     struct client_connection *connection = request->connection;
@@ -461,10 +502,11 @@ static int rtsp_method_describe(struct client_request *request, struct server_re
 	"o=- %llu %llu IN IP4 %s\r\n"
 	"s=Unnamed\r\n"
 	"a=recvonly\r\n"
-	"m=video 2000 RTP/AVP 33\r\n"
+	"m=video %d RTP/AVP 33\r\n"
 	"a=rtpmap:33 MP2T/90000\r\n",
 	sdp_sess, sdp_vers,
-	connection->rtsp_server->server_id);
+	connection->rtsp_server->server_id,
+	rtsp_suggest_client_port(request));
 
     if (buflen < 0){
 	log_error("asprintf failed");
@@ -1088,6 +1130,18 @@ struct rtsp_session *rtsp_setup_session(THIS, struct in_addr *client_addr, struc
 
     if (requested_stream_to_mpegio_key(this, rs, &streamer_conf.config)){
 	return NULL;
+    }
+
+    if (transp->client_port_lo < 1024 || transp->client_port_lo > 65532 ||
+	    transp->client_port_hi > 65534 ||
+	    transp->client_port_lo > transp->client_port_hi){
+	log_error("client specified strange port numbers");
+	return NULL;
+    }
+
+    if (transp->client_port_hi - transp->client_port_lo > 9){
+	log_warning("limiting client ports range");
+	transp->client_port_hi = transp->client_port_lo + 9;
     }
 
     streamer = ht_find(&this->streamers_ht, &streamer_conf, htfunc_streamer, htfunc_streamer_cmp);
