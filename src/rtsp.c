@@ -1570,6 +1570,16 @@ int rtsp_init(THIS)
 	return -1;
     }
 
+    tmp = 0x88; /* AF41, IP precedence=4 */
+    if (setsockopt(fd, IPPROTO_IP, IP_TOS, &tmp, sizeof(tmp)) == -1){
+	log_warning("can not set socket ip priority");
+    }
+
+    tmp = 4; /* priority = 4 */
+    if (setsockopt(fd, SOL_SOCKET, SO_PRIORITY, &tmp, sizeof(tmp)) == -1){
+	log_warning("can not set socket priority");
+    }
+
     tmp = 1;
     if (setsockopt(fd, IPPROTO_IP, IP_RECVERR, &tmp, sizeof(tmp))){
 	log_warning("setting IP_RECVERR failed, error detection is reduced");
