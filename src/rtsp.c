@@ -62,6 +62,18 @@ struct rtsp_mpegio_streamer {
     int id;
 };
 
+struct http_session {
+    struct hashable hh;
+
+    rtsp_session_id session_id;
+
+    struct http_session *release_next;
+    int closed;
+
+    struct rtsp_mpegio_streamer *streamer;
+    int mpegio_client_id;
+};
+
 struct rtsp_session {
     struct hashable hh_ssrc;
     struct hashable hh_sess;
@@ -96,6 +108,9 @@ struct rtsp_server {
     uint16_t listen_port;
     uint16_t rtp_base_port;
 
+    ebb_server http_server;
+    uint16_t http_listen_port;
+
     int mpegio_latest_id;
     struct ht streamers_ht;
     int connection_counter;
@@ -107,10 +122,15 @@ struct rtsp_server {
     ev_timer sess_timeout_watcher;
 //    int sess_timeout_last_bkt;
 
+    struct ht http_sess_ht;
+    struct http_session *http_sess_release;
+
     struct ht sess_id_ht;
     struct ht sess_ssrc_ht;
 
     struct ht_iterator sess_htiter;
+
+    struct ht_iterator http_sess_htiter;
 
     int mpegio_bufsize;
     int mpegio_delay;
@@ -121,14 +141,22 @@ struct rtsp_server {
 
 /***********************************************************************/
 
-struct rtsp_session *rtsp_setup_session(THIS, struct in_addr *client_addr, struct rtsp_transport_descr *transp, struct rtsp_requested_stream *rs);
+static struct http_session *http_session_alloc(THIS);
+static void http_session_free(struct http_session *sess);
+static struct http_session *http_setup_session(THIS, struct in_addr *client_addr, struct rtsp_requested_stream *rs, int fd);
+static int http_session_play(THIS, struct http_session *sess);
+static void http_session_destroy(THIS, struct http_session *sess);
+static void http_session_release(THIS, struct http_session *sess);
+
+
+static struct rtsp_session *rtsp_setup_session(THIS, struct in_addr *client_addr, struct rtsp_transport_descr *transp, struct rtsp_requested_stream *rs);
 
 static struct rtsp_session *rtsp_session_get(THIS, rtsp_session_id *session_id);
 static int rtsp_session_play(THIS, struct rtsp_session *sess, struct rtsp_requested_stream *rs);
 static int rtsp_session_pause(THIS, struct rtsp_session *sess, struct rtsp_requested_stream *rs);
 static int rtsp_session_set_ssrc_hash(THIS, struct rtsp_session *sess, uint32_t ssrc);
 static int rtsp_session_all_ssrc_hash_remove(THIS, struct rtsp_session *sess);
-static void rtsp_destroy_session(THIS, rtsp_session_id *session_id);
+static void rtsp_destroy_session_id(THIS, rtsp_session_id *session_id);
 
 struct rtsp_session *rtsp_session_find_by_ssrc(THIS, uint32_t ssrc);
 
@@ -183,6 +211,7 @@ struct server_response {
     int abort;
     int status_code;
     const char *reason_phrase;
+    int is_http;
 
     struct req_header headers[HEADERS_COUNT];
 
@@ -193,6 +222,7 @@ struct server_response {
     char *body;
     int body_length;
     int body_sent;
+    struct http_session *http_session;
 };
 
 struct client_connection {
@@ -295,7 +325,12 @@ int server_response_cook(struct server_response *resp)
 	if (buffree <= 0) { log_error("out of buffer space when cooking response"); free(buf); return -1; } \
 	bufpos += _l; \
     } while (0)
-    oprintf("RTSP/1.0 %d %s" CRLF, resp->status_code, resp->reason_phrase);
+
+    if (resp->is_http){
+	oprintf("HTTP/1.0 %d %s" CRLF, resp->status_code, resp->reason_phrase);
+    } else {
+	oprintf("RTSP/1.0 %d %s" CRLF, resp->status_code, resp->reason_phrase);
+    }
     oprintf("Server: " PROGRAM_NAME " " VERSION CRLF);
 
     for (i=0;;i++) {
@@ -346,6 +381,7 @@ void client_request_free(struct client_request *request)
 static void process_responses(ebb_connection *_connection)
 {
     struct client_connection *connection = (struct client_connection*)_connection;
+    RTSP rtsp_server = connection->rtsp_server;
     struct server_response *response;
     int res;
 
@@ -353,7 +389,19 @@ static void process_responses(ebb_connection *_connection)
 
     response = connection->response_list;
 
-    if (response->head_sent && (response->body_length > 0 && !response->body_sent)){
+    if (response->head_sent && response->http_session != NULL){
+	http_session_play(rtsp_server, response->http_session);
+
+	/* done here, release this response, rest is done in streamer on dup()'ed fd */
+	connection->response_list = connection->response_list->next;
+	if (connection->response_list == NULL){
+	    connection->response_tail = NULL;
+	}
+
+	ebb_connection_schedule_close(EBB(connection));
+	server_response_free(response);
+
+    } else if (response->head_sent && (response->body_length > 0 && !response->body_sent)){
 	/* headers sent, send body */
 	response->body_sent = 1;
 	res = ebb_connection_write(EBB(connection), response->body, response->body_length, process_responses);
@@ -605,7 +653,7 @@ static int rtsp_method_teardown(struct client_request *request, struct server_re
     }
 
     STATUS_OK(response);
-    rtsp_destroy_session(rtsp_server, &sess_id);
+    rtsp_destroy_session_id(rtsp_server, &sess_id);
 
     return 0;
 }
@@ -686,6 +734,131 @@ static int rtsp_method_pause(struct client_request *request, struct server_respo
     return 0;
 }
 
+static void request_process_rtcp(struct client_request *request,
+	struct client_connection *connection, struct server_response *response)
+{
+    if (request->ebb.protocol != EBB_PROTOCOL_RTSP ||
+		!request->uri ||
+		request->ebb.transfer_encoding == EBB_CHUNKED ||
+		!request->headers[HEADER_CSEQ].value){
+	STATUS_BAD_REQ(response);
+	response->abort = 1;
+    } else if (request->ebb.version_major != 1 || request->ebb.version_minor != 0) {
+	STATUS_BAD_VERSION(response);
+	response->abort = 1;
+    } else if (request->ebb.method != EBB_OPTIONS &&
+		request->ebb.method != EBB_PLAY &&
+		request->ebb.method != EBB_PAUSE &&
+		request->ebb.method != EBB_SETUP &&
+		request->ebb.method != EBB_DESCRIBE &&
+		request->ebb.method != EBB_TEARDOWN) {
+	struct rtsp_requested_stream *rs = parse_requested_stream(REQUEST_URI_RTSP, request->uri, strlen(request->uri));
+	rtsp_check_session(request, response, rs);
+	free_requested_stream(rs);
+
+	STATUS_NOT_IMPLEMENTED(response);
+    } else if ((request->ebb.method == EBB_PLAY ||
+		request->ebb.method == EBB_PAUSE ||
+		request->ebb.method == EBB_TEARDOWN) &&
+		!request->headers[HEADER_SESSION].value){
+	STATUS_SESS_NOT_FOUND(response);
+    } else {
+	int res = -1;
+	struct rtsp_requested_stream *rs = parse_requested_stream(REQUEST_URI_RTSP, request->uri, strlen(request->uri));
+
+
+	if (request->headers[HEADER_CSEQ].value)
+	    response->headers[HEADER_CSEQ].value = strdup(request->headers[HEADER_CSEQ].value);
+
+	if (request->ebb.method == EBB_OPTIONS) {
+	    res = rtsp_method_options(request, response, rs);
+	} else if (request->ebb.method == EBB_DESCRIBE) {
+	    res = rtsp_method_describe(request, response, rs);
+	} else if (request->ebb.method == EBB_SETUP) {
+	    res = rtsp_method_setup(request, response, rs);
+	} else if (request->ebb.method == EBB_TEARDOWN) {
+	    res = rtsp_method_teardown(request, response, rs);
+	} else if (request->ebb.method == EBB_PLAY) {
+	    res = rtsp_method_play(request, response, rs);
+	} else if (request->ebb.method == EBB_PAUSE) {
+	    res = rtsp_method_pause(request, response, rs);
+	}
+
+	free_requested_stream(rs);
+
+	if (res < 0){
+	    // XXX clear headers ?
+	    STATUS_INTERNAL_ERROR(response);
+	}
+
+    }
+}
+
+static int http_method_get(struct client_request *request, struct server_response *response, struct rtsp_requested_stream *rs)
+{
+    struct client_connection *connection = request->connection;
+    RTSP rtsp_server = connection->rtsp_server;
+    struct http_session *sess;
+    int client_id;
+    int new_fd;
+
+    if (!rs || strcmp(rs->category, "iptv") != 0){
+	STATUS_NOT_FOUND(response)
+	return 0;
+    }
+
+    new_fd = dup(EBB(connection)->fd);
+    sess = http_setup_session(connection->rtsp_server, &connection->client_addr.sin_addr, rs, new_fd);
+
+    if (sess != NULL){
+	STATUS_OK(response);
+	response->http_session = sess;
+
+	log_info("client %s connection id: %d %p", connection->client_addr_str, connection->connection_id, sess);
+	response->headers[HEADER_CONTENT_TYPE].value = strdup("video/mp2t");
+    } else {
+	log_warning("failed to setup session");
+	STATUS_NOT_FOUND(response);
+    }
+
+    return 0;
+}
+
+static void request_process_http(struct client_request *request,
+	struct client_connection *connection, struct server_response *response)
+{
+
+    response->abort = 1;
+
+    if (request->ebb.protocol != EBB_PROTOCOL_HTTP ||
+		!request->uri ||
+		request->ebb.transfer_encoding == EBB_CHUNKED){
+	STATUS_BAD_REQ(response);
+    } else if (request->ebb.version_major != 1 ||
+		(request->ebb.version_minor != 0 && request->ebb.version_minor != 1)) {
+	STATUS_BAD_VERSION(response);
+    } else if (request->ebb.method != EBB_GET) {
+
+	STATUS_NOT_IMPLEMENTED(response);
+    } else {
+	int res = -1;
+	struct rtsp_requested_stream *rs = parse_requested_stream(REQUEST_URI_HTTP, request->uri, strlen(request->uri));
+
+	if (request->ebb.method == EBB_GET) {
+	    res = http_method_get(request, response, rs);
+	}
+
+	free_requested_stream(rs);
+
+	if (res < 0){
+	    // XXX clear headers ?
+	    STATUS_INTERNAL_ERROR(response);
+	} else
+	    STATUS_OK(response);
+
+    }
+}
+
 static void request_complete(ebb_request *_request)
 {
     struct client_request *request = (struct client_request*)_request;
@@ -702,6 +875,9 @@ static void request_complete(ebb_request *_request)
 					    request->ebb.version_major, request->ebb.version_minor);
 	log_info("    URI:                %s", request->uri);
 	log_info("    Method:             %s", (request->ebb.method == EBB_OPTIONS) ? "OPTIONS" :
+					    (request->ebb.method == EBB_POST) ? "POST" :
+					    (request->ebb.method == EBB_GET) ? "GET" :
+					    (request->ebb.method == EBB_HEAD) ? "HEAD" :
 					    (request->ebb.method == EBB_DESCRIBE) ? "DESCRIBE" :
 					    (request->ebb.method == EBB_ANNOUNCE) ? "ANNOUNCE" :
 					    (request->ebb.method == EBB_PAUSE) ? "PAUSE" :
@@ -729,60 +905,15 @@ static void request_complete(ebb_request *_request)
 
     response = server_response_alloc(request);
 
-    if (request->ebb.protocol != EBB_PROTOCOL_RTSP ||
-		!request->uri ||
-		request->ebb.transfer_encoding == EBB_CHUNKED ||
-		!request->headers[HEADER_CSEQ].value){
-	STATUS_BAD_REQ(response);
-	response->abort = 1;
-    } else if (request->ebb.version_major != 1 || request->ebb.version_minor != 0) {
-	STATUS_BAD_VERSION(response);
-	response->abort = 1;
-    } else if (request->ebb.method != EBB_OPTIONS &&
-		request->ebb.method != EBB_PLAY &&
-		request->ebb.method != EBB_PAUSE &&
-		request->ebb.method != EBB_SETUP &&
-		request->ebb.method != EBB_DESCRIBE &&
-		request->ebb.method != EBB_TEARDOWN) {
-	struct rtsp_requested_stream *rs = parse_requested_stream(request->uri, strlen(request->uri));
-	rtsp_check_session(request, response, rs);
-	free_requested_stream(rs);
-
-	STATUS_NOT_IMPLEMENTED(response);
-    } else if ((request->ebb.method == EBB_PLAY ||
-		request->ebb.method == EBB_PAUSE ||
-		request->ebb.method == EBB_TEARDOWN) &&
-		!request->headers[HEADER_SESSION].value){
-	STATUS_SESS_NOT_FOUND(response);
+    if (request->ebb.protocol == EBB_PROTOCOL_RTSP){
+	response->is_http = 0;
+	request_process_rtcp(request, connection, response);
+    } else if (request->ebb.protocol == EBB_PROTOCOL_HTTP){
+	response->is_http = 1;
+	request_process_http(request, connection, response);
     } else {
-	int res = -1;
-	struct rtsp_requested_stream *rs = parse_requested_stream(request->uri, strlen(request->uri));
-
-
-	if (request->headers[HEADER_CSEQ].value)
-	    response->headers[HEADER_CSEQ].value = strdup(request->headers[HEADER_CSEQ].value);
-
-	if (request->ebb.method == EBB_OPTIONS) {
-	    res = rtsp_method_options(request, response, rs);
-	} else if (request->ebb.method == EBB_DESCRIBE) {
-	    res = rtsp_method_describe(request, response, rs);
-	} else if (request->ebb.method == EBB_SETUP) {
-	    res = rtsp_method_setup(request, response, rs);
-	} else if (request->ebb.method == EBB_TEARDOWN) {
-	    res = rtsp_method_teardown(request, response, rs);
-	} else if (request->ebb.method == EBB_PLAY) {
-	    res = rtsp_method_play(request, response, rs);
-	} else if (request->ebb.method == EBB_PAUSE) {
-	    res = rtsp_method_pause(request, response, rs);
-	}
-
-	free_requested_stream(rs);
-
-	if (res < 0){
-	    // XXX clear headers ?
-	    STATUS_INTERNAL_ERROR(response);
-	}
-
+	log_error("internal error: unhandled protocol");
+	return;
     }
 
     if (server_response_cook(response)){
@@ -1031,6 +1162,22 @@ static struct rtsp_session *rtsp_session_remove(THIS, rtsp_session_id *session_i
 
 /************************************************************************/
 
+static hthash_value htfunc_http_sess(const void *item)
+{
+    const struct http_session *sess = item;
+    /* XXX see htfunc_session() */
+    return sess->session_id ^ (sess->session_id >> 32);
+}
+
+static int htfunc_http_sess_cmp(const void *_item1, const void *_item2_or_key)
+{
+    const struct http_session *item1 = _item1;
+    const struct http_session *item2_or_key = _item2_or_key;
+
+    return memcmp(&item1->session_id, &item2_or_key->session_id, sizeof(item1->session_id));
+}
+
+
 static hthash_value htfunc_streamer(const void *item)
 {
     const struct rtsp_mpegio_streamer *streamer = item;
@@ -1066,6 +1213,26 @@ static MPEGIO create_setup_mpegio(struct mpegio_config *conf)
     return mpegio;
 }
 
+
+void mpegio_fd_send_error_handler(void *param, int fd, uint64_t fd_param, int in_errno)
+{
+    THIS = param;
+    struct http_session *sess;
+    struct http_session tmpsess;
+
+    tmpsess.session_id = fd_param;
+
+    sess = ht_remove(&this->http_sess_ht, &tmpsess, htfunc_http_sess, htfunc_http_sess_cmp);
+
+    if (sess) {
+	close(fd);
+	sess->closed = 1;
+	http_session_release(this, sess);
+    } else {
+	log_info("error for unknown session: %ld", fd_param);
+    }
+}
+
 void mpegio_send_error_handler(void *param, uint32_t ssrc, int in_errno)
 {
     THIS = param;
@@ -1088,7 +1255,7 @@ void mpegio_send_error_handler(void *param, uint32_t ssrc, int in_errno)
 	if (sess->send_errors > 5){
 	    log_warning("deactivating session %llu, too many consequent send errors", sess->session_id);
 	    // XXX do something with _session_
-	    mpegio_clientid_set_active(sess->streamer->mpegio, sess->mpegio_client_id, MPEGIO_CLIENT_STOP);
+	    mpegio_clientid_set_status(sess->streamer->mpegio, sess->mpegio_client_id, MPEGIO_CLIENT_STOP);
 	    sess->playing = 0;
 	}
     }
@@ -1117,31 +1284,16 @@ int requested_stream_to_mpegio_key(THIS, struct rtsp_requested_stream *rs, struc
     return 0;
 }
 
-struct rtsp_session *rtsp_setup_session(THIS, struct in_addr *client_addr, struct rtsp_transport_descr *transp, struct rtsp_requested_stream *rs)
+static struct rtsp_mpegio_streamer *mpegio_streamer_prepare(THIS, struct in_addr *client_addr, struct rtsp_requested_stream *rs)
 {
-    struct rtsp_session *sess;
     struct rtsp_mpegio_streamer *streamer;
-    struct mpegio_client *client;
     struct rtsp_mpegio_streamer streamer_conf;
     MPEGIO mpegio;
 
-    uint32_t rtp_seq;
-    uint32_t ssrc;
 
     if (requested_stream_to_mpegio_key(this, rs, &streamer_conf.config)){
+	log_info("can not parse request");
 	return NULL;
-    }
-
-    if (transp->client_port_lo < 1024 || transp->client_port_lo > 65532 ||
-	    transp->client_port_hi > 65534 ||
-	    transp->client_port_lo > transp->client_port_hi){
-	log_error("client specified strange port numbers");
-	return NULL;
-    }
-
-    if (transp->client_port_hi - transp->client_port_lo > 9){
-	log_warning("limiting client ports range");
-	transp->client_port_hi = transp->client_port_lo + 9;
     }
 
     streamer = ht_find(&this->streamers_ht, &streamer_conf, htfunc_streamer, htfunc_streamer_cmp);
@@ -1156,7 +1308,8 @@ struct rtsp_session *rtsp_setup_session(THIS, struct in_addr *client_addr, struc
 	streamer->config.send_fd = this->send_fd;
 	streamer->config.init_buf_size = this->mpegio_bufsize;
 	streamer->config.streaming_delay = this->mpegio_delay;
-	streamer->config.on_send_error = mpegio_send_error_handler;
+	streamer->config.rtp_on_send_error = mpegio_send_error_handler;
+	streamer->config.fd_on_send_error = mpegio_fd_send_error_handler;
 	streamer->config.cbdata = this;
 
 	mpegio = create_setup_mpegio(&streamer->config);
@@ -1174,8 +1327,111 @@ struct rtsp_session *rtsp_setup_session(THIS, struct in_addr *client_addr, struc
 	    log_error("mpegio reinit failed");
 	    return NULL;
 	}
-	mpegio = streamer->mpegio;
     }
+
+    return streamer;
+}
+
+static struct http_session *http_session_alloc(THIS)
+{
+    struct http_session *sess;
+
+    sess = xmalloc(sizeof(struct http_session));
+    memset(sess, 0 , sizeof(struct http_session));
+
+    sess->session_id = my_rand();
+
+    ht_insert(&this->http_sess_ht, sess, htfunc_http_sess);
+    return sess;
+}
+
+static void http_session_free(struct http_session *sess)
+{
+    free(sess);
+}
+
+static void http_session_destroy(THIS, struct http_session *sess)
+{
+    struct rtsp_mpegio_streamer *streamer;
+    MPEGIO mpegio;
+
+    /* session must be removed from session hast table by now */
+
+    streamer = sess->streamer;
+    mpegio = streamer->mpegio;
+
+    log_info("http session %llu closed", sess->session_id);
+
+    mpegio_clientid_destroy(mpegio, sess->mpegio_client_id);
+
+    http_session_free(sess);
+}
+
+static void http_session_release(THIS, struct http_session *sess)
+{
+    if (this->http_sess_release) {
+	sess->release_next = this->http_sess_release;
+	this->http_sess_release = sess;
+    } else {
+	sess->release_next = NULL;
+	this->http_sess_release = sess;
+    }
+}
+
+
+struct http_session *http_setup_session(THIS, struct in_addr *client_addr, struct rtsp_requested_stream *rs, int fd)
+{
+    struct http_session *sess;
+    struct rtsp_mpegio_streamer *streamer;
+    struct mpegio_client *client;
+    MPEGIO mpegio;
+    int id;
+
+    streamer = mpegio_streamer_prepare(this, client_addr, rs);
+    if (streamer == NULL){
+	return NULL;
+    }
+    mpegio = streamer->mpegio;
+
+    sess = http_session_alloc(this);
+
+    client = mpegio_client_create(mpegio);
+    setnonblocking(fd);
+    mpegio_client_setup_fd(client, fd, sess->session_id);
+
+    sess->streamer = streamer;
+    mpegio_client_get_parameters(mpegio, client, &sess->mpegio_client_id, NULL, NULL);
+
+    log_info("http session %llu, setup mpegio client id: %d", sess->session_id, sess->mpegio_client_id);
+    return sess;
+}
+
+struct rtsp_session *rtsp_setup_session(THIS, struct in_addr *client_addr, struct rtsp_transport_descr *transp, struct rtsp_requested_stream *rs)
+{
+    struct rtsp_mpegio_streamer *streamer;
+    struct rtsp_session *sess;
+    struct mpegio_client *client;
+    uint32_t rtp_seq;
+    uint32_t ssrc;
+    MPEGIO mpegio;
+
+    if (transp->client_port_lo < 1024 || transp->client_port_lo > 65532 ||
+	    transp->client_port_hi > 65534 ||
+	    transp->client_port_lo > transp->client_port_hi){
+	log_error("client specified strange port numbers");
+	return NULL;
+    }
+
+    if (transp->client_port_hi - transp->client_port_lo > 9){
+	log_warning("limiting client ports range");
+	transp->client_port_hi = transp->client_port_lo + 9;
+    }
+
+    streamer = mpegio_streamer_prepare(this, client_addr, rs);
+    if (streamer == NULL){
+	return NULL;
+    }
+    mpegio = streamer->mpegio;
 
     sess = rtsp_session_alloc(this);
 
@@ -1189,7 +1445,8 @@ struct rtsp_session *rtsp_setup_session(THIS, struct in_addr *client_addr, struc
     // XXX handle ssrc collisions
     while ((ssrc = my_rand()) == 0);
 
-    client = mpegio_client_create(mpegio, &sess->addr, sess->client_port_lo, ssrc);
+    client = mpegio_client_create(mpegio);
+    mpegio_client_setup_rtp(client, &sess->addr, sess->client_port_lo, ssrc);
 
     transp->ssrc = ssrc;
 
@@ -1204,7 +1461,7 @@ struct rtsp_session *rtsp_setup_session(THIS, struct in_addr *client_addr, struc
     return sess;
 }
 
-void rtsp_free_session(THIS, struct rtsp_session *sess)
+static void rtsp_destroy_session(THIS, struct rtsp_session *sess)
 {
     struct rtsp_mpegio_streamer *streamer;
     MPEGIO mpegio;
@@ -1222,12 +1479,12 @@ void rtsp_free_session(THIS, struct rtsp_session *sess)
     rtsp_session_free(sess);
 }
 
-void rtsp_destroy_session(THIS, rtsp_session_id *session_id)
+void rtsp_destroy_session_id(THIS, rtsp_session_id *session_id)
 {
     struct rtsp_session *sess = rtsp_session_remove(this, session_id);
 
     if (sess){
-	rtsp_free_session(this, sess);
+	rtsp_destroy_session(this, sess);
     } else {
 	log_warning("session to destroy is not found");
     }
@@ -1272,6 +1529,16 @@ int rtsp_session_set_ssrc_hash(THIS, struct rtsp_session *sess, uint32_t ssrc)
     return 0;
 }
 
+int http_session_play(THIS, struct http_session *sess)
+{
+    MPEGIO mpegio;
+
+    mpegio = sess->streamer->mpegio;
+    mpegio_clientid_set_status(mpegio, sess->mpegio_client_id, MPEGIO_CLIENT_PLAY);
+
+    return 0;
+}
+
 int rtsp_session_play(THIS, struct rtsp_session *sess, struct rtsp_requested_stream *rs)
 {
     struct rtsp_mpegio_streamer *streamer;
@@ -1289,7 +1556,7 @@ int rtsp_session_play(THIS, struct rtsp_session *sess, struct rtsp_requested_str
 
     mpegio = streamer->mpegio;
 
-    mpegio_clientid_set_active(mpegio, sess->mpegio_client_id, MPEGIO_CLIENT_PLAY);
+    mpegio_clientid_set_status(mpegio, sess->mpegio_client_id, MPEGIO_CLIENT_PLAY);
 
     return 0;
 }
@@ -1311,7 +1578,7 @@ int rtsp_session_pause(THIS, struct rtsp_session *sess, struct rtsp_requested_st
 
     mpegio = streamer->mpegio;
 
-    mpegio_clientid_set_active(mpegio, sess->mpegio_client_id, MPEGIO_CLIENT_STOP);
+    mpegio_clientid_set_status(mpegio, sess->mpegio_client_id, MPEGIO_CLIENT_STOP);
 
     return 0;
 }
@@ -1462,6 +1729,17 @@ void rtcp_destroy(THIS)
 
 /************************************************************************/
 
+static void http_sess_destroy_released(THIS)
+{
+    struct http_session *release_http;
+
+    while (this->http_sess_release){
+	release_http = this->http_sess_release;
+	this->http_sess_release = release_http->release_next;
+	http_session_destroy(this, release_http);
+    }
+}
+
 static void ev_sess_check_timeout_handler(struct ev_loop *loop, ev_timer *w, int revents)
 {
     /* Here we check for timeouted sessions and destroy them.
@@ -1481,12 +1759,12 @@ static void ev_sess_check_timeout_handler(struct ev_loop *loop, ev_timer *w, int
 	if (item->latest_activity < sess_timeouted){
 
 	    ht_remove(&this->sess_id_ht, item, htfunc_session, htfunc_session_cmp);
-	    rtsp_free_session(this, item);
+	    rtsp_destroy_session(this, item);
 
 	} else if (item->have_rtcp_reports && item->playing && item->latest_activity < rtcp_timeouted){
 
 	    ht_remove(&this->sess_id_ht, item, htfunc_session, htfunc_session_cmp);
-	    rtsp_free_session(this, item);
+	    rtsp_destroy_session(this, item);
 
 	}
 
@@ -1495,6 +1773,22 @@ static void ev_sess_check_timeout_handler(struct ev_loop *loop, ev_timer *w, int
 	}
     }
 
+#if 0
+    /* nothing to do yet */
+    iterstate = NULL;
+    buckets_limit = bucket_per_iteration;
+
+    while ((itemxxx = ht_iterate(&this->http_sess_htiter, &iterstate, &buckets_limit)) != NULL){
+
+	log_info("x");
+
+	if (ht_iterator_is_bucket_end(&this->http_sess_htiter, &iterstate) && buckets_limit <= 0){
+	    break;
+	}
+    }
+#endif
+
+    http_sess_destroy_released(this);
 }
 
 /************************************************************************/
@@ -1518,6 +1812,7 @@ int rtsp_load_config(THIS, dictionary * d)
     const char *ini_listen_host;
     uint16_t ini_listen_port, ini_rtp_server_base_port;
     int ini_mpegio_bufsize, ini_mpegio_delay;
+    int ini_http_listen_port;
 
     ini_listen_host = iniparser_getstring(d, "rtsp:listen_host", "0.0.0.0");
 
@@ -1525,6 +1820,8 @@ int rtsp_load_config(THIS, dictionary * d)
 	ini_listen_port = server_listen_port;
     else
 	ini_listen_port = iniparser_getint(d, "rtsp:listen_port", 554);
+
+    ini_http_listen_port = iniparser_getint(d, "http:listen_port", 0);
 
     ini_rtp_server_base_port = iniparser_getint(d, "rtsp:rtp_server_base_port", 4000);
 
@@ -1535,6 +1832,7 @@ int rtsp_load_config(THIS, dictionary * d)
     this->server_id[sizeof(this->server_id)-1] = 0;
 
     this->listen_port = ini_listen_port;
+    this->http_listen_port = ini_http_listen_port;
 
     if (strcmp(ini_listen_host, "0.0.0.0")) {
 	if (inet_aton(ini_listen_host, &this->listen_addr) == 0){
@@ -1558,11 +1856,13 @@ int rtsp_init(THIS)
     struct sockaddr_in addr;
     int fd, tmp, res;
 
+    ht_init(&this->http_sess_ht, HTTP_SESS_HASHSIZE, offsetof(struct http_session, hh));
     ht_init(&this->sess_id_ht, RTSP_SESS_HASHSIZE, offsetof(struct rtsp_session, hh_sess));
     ht_init(&this->sess_ssrc_ht, RTSP_SESS_HASHSIZE, offsetof(struct rtsp_session, hh_ssrc));
     ht_init(&this->streamers_ht, RTSP_MPEGIO_HASHSIZE, offsetof(struct rtsp_mpegio_streamer, hh));
 
     ht_iterator_init(&this->sess_htiter, &this->sess_id_ht);
+    ht_iterator_init(&this->http_sess_htiter, &this->http_sess_ht);
 
     fd = socket(PF_INET, SOCK_DGRAM, 0);
     if (fd < 0) {
@@ -1614,6 +1914,18 @@ int rtsp_init(THIS)
 	return -1;
     }
 
+    if (this->http_listen_port){
+
+	ebb_server_init(&this->http_server, evloop);
+
+	this->http_server.new_connection = new_connection;
+	this->http_server.data = this;
+
+	if (ebb_server_listen_on_port(&this->http_server, this->http_listen_port) < 0){
+	    log_warning("Failed to start HTTP server on port %d", this->http_listen_port);
+	}
+    }
+
     ev_timer_init(&this->sess_timeout_watcher, ev_sess_check_timeout_handler,
 		    RTSP_CHECK_SESSION_TIMEOUTS_ITER, RTSP_CHECK_SESSION_TIMEOUTS_ITER);
     this->sess_timeout_watcher.data = this;
@@ -1628,7 +1940,7 @@ int ht_free_session(void *item, void *param)
     THIS = param;
     struct rtsp_session *sess = item;
 
-    rtsp_destroy_session(this, &sess->session_id);
+    rtsp_destroy_session_id(this, &sess->session_id);
 
     return HT_CB_CONTINUE;
 }
@@ -1643,17 +1955,34 @@ int ht_free_streamer(void *item, void *param)
     return HT_CB_CONTINUE;
 }
 
+int ht_free_http_sess(void *item, void *param)
+{
+    THIS = param;
+    struct http_session *sess = item;
+
+    http_session_destroy(this, sess);
+
+    return HT_CB_CONTINUE;
+}
+
 void rtsp_cleanup(THIS)
 {
+    if (this->http_listen_port){
+	ebb_server_unlisten(&this->http_server);
+    }
     ebb_server_unlisten(&this->server);
     ev_timer_stop(evloop, &(this->sess_timeout_watcher));
 
+    http_sess_destroy_released(this);
+
     rtcp_destroy(this);
 
+    ht_remove_all(&this->http_sess_ht, ht_free_http_sess, this);
     ht_remove_all(&this->sess_ssrc_ht, NULL, NULL);
     ht_remove_all(&this->sess_id_ht, ht_free_session, this);
     ht_remove_all(&this->streamers_ht, ht_free_streamer, this);
 
+    ht_destroy(&this->http_sess_ht);
     ht_destroy(&this->streamers_ht);
     ht_destroy(&this->sess_ssrc_ht);
     ht_destroy(&this->sess_id_ht);

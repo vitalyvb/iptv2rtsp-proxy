@@ -78,7 +78,11 @@ struct mpegio_client {
     struct mpegio_client *next;
 
     int id;
-    int active;
+    int status;
+
+    uint64_t fd_param;
+    int fd;
+    int send_pos;
 
     uint32_t ssrc;
     struct sockaddr_in send_dest;
@@ -98,7 +102,8 @@ struct mpegio_stream {
     int opt_so_rcvbuf;
     int max_stream_delay;
 
-    mpegeio_on_send_error on_send_error;
+    mpegeio_rtp_on_send_error rtp_on_send_error;
+    mpegeio_fd_on_send_error fd_on_send_error;
     void *cbdata;
 
     /* working state */
@@ -122,6 +127,9 @@ struct mpegio_stream {
     struct mpegio_client *clients_tail;
     int active_clients;
     int clients;
+#ifdef DEBUG
+    int clients_list_restrict;	/* debug only - forbid some function calls when traversing clients list */
+#endif
 
     /* stream information */
     PSI psi;
@@ -131,6 +139,7 @@ struct mpegio_stream {
     uint8_t *ringbuf_bb;
     int ringbuf_start;
     int ringbuf_end;
+    int ringbuf_wrap_tail_pos; /* start of ring buffers' tail with no data */
 
     uint32_t abs_stream_pos;
 
@@ -155,7 +164,8 @@ int mpegio_configure(MPEGIO _this, const struct mpegio_config *config)
     this->port = config->port;
     this->send_fd = config->send_fd;
 
-    this->on_send_error = config->on_send_error;
+    this->rtp_on_send_error = config->rtp_on_send_error;
+    this->fd_on_send_error = config->fd_on_send_error;
     this->cbdata = config->cbdata;
 
     memcpy(&this->addr, &config->addr, sizeof(struct in_addr));
@@ -248,6 +258,7 @@ static void ring_buffer_release(THIS)
 {
     this->ringbuf_start = 0;
     this->ringbuf_end = 0;
+    this->ringbuf_wrap_tail_pos = -1;
     descr_release_all(this);
 
     free(this->ringbuf);
@@ -298,8 +309,14 @@ static void handle_error_report_packet(THIS, struct sockaddr *sockaddr, int in_e
 
     ssrc = ntohl(hdr->ssrc);
 
-    if (this->on_send_error){
-	this->on_send_error(this->cbdata, ssrc, in_errno);
+    if (this->rtp_on_send_error){
+#ifdef DEBUG
+	this->clients_list_restrict++;
+#endif
+	this->rtp_on_send_error(this->cbdata, ssrc, in_errno);
+#ifdef DEBUG
+	this->clients_list_restrict--;
+#endif
     }
 
 }
@@ -365,6 +382,124 @@ static void handle_send_error(THIS, int fd)
 
 }
 
+static void handle_send_error_fd(THIS, struct mpegio_client *client, int in_errno)
+{
+    mpegio_client_set_status(this, client, MPEGIO_CLIENT_RELEASE);
+
+    if (this->fd_on_send_error){
+#ifdef DEBUG
+	this->clients_list_restrict++;
+#endif
+	this->fd_on_send_error(this->cbdata, client->fd, client->fd_param, in_errno);
+#ifdef DEBUG
+	this->clients_list_restrict--;
+#endif
+    } else {
+	close(client->fd);
+    }
+}
+
+static void send_to_fd_clients(THIS)
+{
+    struct mpegio_client *client = this->clients_list;
+    int res, length;
+    int starting = 0;
+
+    while (client){
+	if (client->status != MPEGIO_CLIENT_PLAY || client->fd < 0){
+	    client = client->next;
+	    continue;
+	}
+
+	if (client->send_pos == -1){
+	    /* init */
+	    starting = 1;
+
+	    /* determine buffer position to start streaming at */
+
+	    if (this->ringbuf_wrap_tail_pos == -1){
+		client->send_pos = this->ringbuf_start / 2;
+	    } else {
+		if (this->ringbuf_start > this->ringbuf_end) {
+		    client->send_pos = (this->ringbuf_start + this->ringbuf_end) / 2;
+		} else {
+		    /* this->ringbuf_end <= this->ringbuf_start */
+		    int size = (this->ringbuf_wrap_tail_pos - this->ringbuf_end) + this->ringbuf_start;
+		    int newpos;
+		
+		    newpos = this->ringbuf_end + size / 2;
+		    if (newpos >= this->ringbuf_wrap_tail_pos)
+			client->send_pos = newpos - this->ringbuf_wrap_tail_pos;
+		    else
+			client->send_pos = newpos;
+		}
+	    }
+
+	    client->send_pos = client->send_pos / MPEG_PKT_SIZE * MPEG_PKT_SIZE;
+	    log_debug(" http streaming initial params: %d, %d-%d : %d", this->ringbuf_wrap_tail_pos,
+			this->ringbuf_start, this->ringbuf_end, client->send_pos);
+	}
+
+	if (this->ringbuf_start < client->send_pos && client->send_pos < this->ringbuf_end){
+	    log_error("           client buffer overflow, can't recover");
+
+	    handle_send_error_fd(this, client, 0);
+
+	    client = client->next;
+	    continue;
+	} else if (client->send_pos > this->ringbuf_start){
+	    length = this->ringbuf_wrap_tail_pos - client->send_pos;
+	    if (length > 0){
+		/* pass */
+	    } else if (length == 0 && this->ringbuf_start > 0){
+		client->send_pos = 0;
+		length = this->ringbuf_start;
+	    } else {
+		client->send_pos = 0;
+		log_error("send buffer is empty, unexpected...");
+		client = client->next;
+		continue;
+	    }
+	} else {
+	    length = this->ringbuf_start - client->send_pos;
+
+	    if (unlikely(starting && length < 0x1000)){
+		client->send_pos = -1;
+		client = client->next;
+		log_debug(" http streaming - waiting buffer to fill");
+		continue;
+	    }
+	}
+
+	res = send(client->fd, &this->ringbuf[client->send_pos], length, MSG_DONTWAIT);
+
+	if (res < 0){
+	    if (errno == EAGAIN){
+
+	    } else {
+		log_error("fd send err %d %d", res, errno);
+
+		handle_send_error_fd(this, client, errno);
+	    }
+	} else if (res != length){
+	    if (errno == EAGAIN){
+
+	    } else {
+		log_error("fd send err %d %d", res, errno);
+	    }
+
+	    client->send_pos += res;
+	} else {
+	    client->send_pos += res;
+	}
+
+	if (client->send_pos >= this->ringbuf_wrap_tail_pos)
+	    client->send_pos -= this->ringbuf_wrap_tail_pos;
+
+	client = client->next;
+    }
+}
+
 static void send_to_clients(THIS, uint8_t *buffer, int length, uint32_t timestamp)
 {
     /* send same data to all clients changind rtp header only */
@@ -400,7 +535,12 @@ static void send_to_clients(THIS, uint8_t *buffer, int length, uint32_t timestam
      *    http://wiki.ipxwarzone.com/index.php5?title=Linux_packet_mmap
      */
     while (client){
-	if (client->active != MPEGIO_CLIENT_PLAY){
+	if (client->status != MPEGIO_CLIENT_PLAY){
+	    client = client->next;
+	    continue;
+	}
+
+	if (client->fd >= 0){
 	    client = client->next;
 	    continue;
 	}
@@ -495,6 +635,7 @@ static void mpegio_output_handler(THIS)
 
     } while (continue_send);
 
+    send_to_fd_clients(this);
 
     if (this->descr_head) {
 	double target_delay;
@@ -575,6 +716,7 @@ static int mpegio_input_handler(THIS)
 	int new_ringbuf_end, dst_start;
 	int count = 0;
 	uint16_t pkt_flags, pid;
+
 	const struct rtp_header *rtp_header;
 	int rtp_input = 0;
 	uint32_t rtp_timestamp = 0;
@@ -591,7 +733,7 @@ static int mpegio_input_handler(THIS)
 
 	/* it is possible that target io delay will be much larger than max_stream_delay
 	 *
-	 * this happens if input streaming started, and almost immidiately
+	 * this happens if input streaming started, and almost immediately
 	 * stopped (before we started to send data), buffer timer continues to
 	 * run...
 	 *
@@ -701,6 +843,8 @@ static int mpegio_input_handler(THIS)
 		if (new_ringbuf_end+MPEG_PKT_SIZE > this->ringbuf_size){
 		    /* roll over 0 */
 		    dst_start = 0;
+		    this->ringbuf_wrap_tail_pos = new_ringbuf_end;
+
 		    new_ringbuf_end = MPEG_PKT_SIZE;
 		    if (this->ringbuf_start == 0){
 			log_error("ring buffer overflow. input data discarded");
@@ -842,19 +986,19 @@ void mpegio_clients_active_changed(THIS)
     }
 }
 
-int mpegio_client_set_active(THIS, struct mpegio_client *client, int active)
+int mpegio_client_set_status(THIS, struct mpegio_client *client, int status)
 {
     if (client){
 
-	if (!client->active && active){
+	if (!IS_MPEGIO_CLIENT_ACTIVE(client->status) && IS_MPEGIO_CLIENT_ACTIVE(status)){
 	    this->active_clients++;
 	    mpegio_clients_active_changed(this);
-	} else if (client->active && !active){
+	} else if (IS_MPEGIO_CLIENT_ACTIVE(client->status) && !IS_MPEGIO_CLIENT_ACTIVE(status)){
 	    this->active_clients--;
 	    mpegio_clients_active_changed(this);
 	}
 
-	client->active = active;
+	client->status = status;
 
 	return 0;
     }
@@ -862,11 +1006,11 @@ int mpegio_client_set_active(THIS, struct mpegio_client *client, int active)
     return -1;
 }
 
-int mpegio_clientid_set_active(THIS, int client_id, int active)
+int mpegio_clientid_set_status(THIS, int client_id, int status)
 {
     struct mpegio_client *client = mpegio_client_find_by_id(this, client_id);
     if (client)
-	return mpegio_client_set_active(this, client, active);
+	return mpegio_client_set_status(this, client, status);
     return -1;
 }
 
@@ -904,6 +1048,8 @@ int mpegio_clientid_destroy(THIS, int client_id)
     struct mpegio_client *prev_client = NULL;
     struct mpegio_client *client = this->clients_list;
 
+    assert(!this->clients_list_restrict);
+
     while (client){
 
 	if (client_id == client->id){
@@ -935,8 +1081,8 @@ int mpegio_clientid_destroy(THIS, int client_id)
     if (this->clients == 0)
 	ev_timer_start(evloop, &this->suicide_timer);
 
-    if (client->active){
-	client->active = 0;
+    if (IS_MPEGIO_CLIENT_ACTIVE(client->status)){
+	client->status = MPEGIO_CLIENT_STOP;
 	this->active_clients--;
 	mpegio_clients_active_changed(this);
     }
@@ -950,6 +1096,8 @@ int mpegio_clientid_destroy(THIS, int client_id)
 
 int mpegio_clients_free_all(THIS)
 {
+    assert(!this->clients_list_restrict);
+
     while (this->clients_list){
 	mpegio_clientid_destroy(this, this->clients_list->id);
     }
@@ -958,9 +1106,33 @@ int mpegio_clients_free_all(THIS)
     return 0;
 }
 
-struct mpegio_client *mpegio_client_create(THIS, struct in_addr *dest, uint16_t port, uint32_t ssrc)
+int mpegio_client_setup_rtp(struct mpegio_client *client, struct in_addr *dest, uint16_t port, uint32_t ssrc)
+{
+    client->fd = -1;
+
+    client->send_dest.sin_family = AF_INET;
+    client->send_dest.sin_port = htons(port);
+    client->send_dest.sin_addr.s_addr = dest->s_addr;
+
+    client->ssrc = ssrc;
+    client->rtp_seq = my_rand();
+
+    return 0;
+}
+
+int mpegio_client_setup_fd(struct mpegio_client *client, int fd, uint64_t fd_param)
+{
+    client->fd = fd;
+    client->fd_param = fd_param;
+
+    return 0;
+}
+
+struct mpegio_client *mpegio_client_create(THIS)
 {
     struct mpegio_client *client;
+
+    assert(!this->clients_list_restrict);
 
     client = xmalloc(sizeof(struct mpegio_client));
     if (client == NULL){
@@ -969,14 +1141,8 @@ struct mpegio_client *mpegio_client_create(THIS, struct in_addr *dest, uint16_t 
     memset(client, 0, sizeof(struct mpegio_client));
 
     client->id = this->latest_client_id++;
-    client->active = 0;
-
-    client->send_dest.sin_family = AF_INET;
-    client->send_dest.sin_port = htons(port);
-    client->send_dest.sin_addr.s_addr = dest->s_addr;
-
-    client->ssrc = ssrc;
-    client->rtp_seq = my_rand();
+    client->status = MPEGIO_CLIENT_STOP;
+    client->send_pos = -1;
 
     if (this->clients_tail){
 	this->clients_tail->next = client;
@@ -1054,6 +1220,7 @@ int mpegio_init(THIS)
 
     this->ringbuf = NULL;
     this->ringbuf_bb = xmalloc(RINGBUF_BB_SIZE);
+    this->ringbuf_wrap_tail_pos = -1;
 
     fd = socket(PF_INET, SOCK_DGRAM, 0);
     if (fd < 0) {
@@ -1135,7 +1302,8 @@ static void mpegio_cleanup(THIS)
 
 void mpegio_free(THIS)
 {
-    this->on_send_error = NULL;
+    this->rtp_on_send_error = NULL;
+    this->fd_on_send_error = NULL;
     this->cbdata = NULL;
 
     /* do not close, not ours */

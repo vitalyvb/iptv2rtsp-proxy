@@ -235,7 +235,7 @@ void free_requested_stream(struct rtsp_requested_stream *s)
     free(s);
 }
 
-struct rtsp_requested_stream *parse_requested_stream(char *in_text, int len)
+struct rtsp_requested_stream *parse_requested_stream(int type, char *in_text, int len)
 {
     char *buf, *p, *tokstr, *token, *tokptr = NULL;
     struct rtsp_requested_stream *rs = alloc_requested_stream();
@@ -247,27 +247,36 @@ struct rtsp_requested_stream *parse_requested_stream(char *in_text, int len)
     buf[len] = 0;
 
     p = buf;
-    /* skip schema */
-    p = strchr(buf, ':');
-    if (p == NULL || (p[1] != '/') || (p[2] != '/')){
+    if (type == REQUEST_URI_RTSP){
+	/* skip schema */
+	p = strchr(buf, ':');
+	if (p == NULL || (p[1] != '/') || (p[2] != '/')){
+	    free(buf);
+	    free(rs);
+	    return NULL;
+	}
+	p += 3; /* skip "://" */
+
+	/* get hostname */
+	hostname_start = p;
+	p = strchr(p, '/');
+	if (p ==  NULL){
+	    free(buf);
+	    free(rs);
+	    return NULL;
+	}
+	p[0] = 0;
+	strncpy(rs->hostname, hostname_start, sizeof(rs->hostname)-1);
+	p += 1; /* skip "/" */
+    } else if (type == REQUEST_URI_HTTP){
+	if (len > 0 && p[0] == '/'){
+	    p += 1; /* skip "/" */
+	}
+    } else {
 	free(buf);
 	free(rs);
 	return NULL;
     }
-    p += 3; /* skip "://" */
-
-    /* get hostname */
-    hostname_start = p;
-    p = strchr(p, '/');
-    if (p ==  NULL){
-	free(buf);
-	free(rs);
-	return NULL;
-    }
-    p[0] = 0;
-    strncpy(rs->hostname, hostname_start, sizeof(rs->hostname)-1);
-
-    p += 1; /* skip "/" */
 
     path_start = p;
 
