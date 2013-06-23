@@ -15,5 +15,6 @@ int is_multicast(struct in_addr *addr);
 int multicast_group_join(int fd, struct in_addr *group);
 int multicast_group_leave(int fd, struct in_addr *group);
 int setnonblocking(int fd);
+int set_tcp_congestion_ctl(int fd, const char *ccname);
 
 #endif /* UTILS_H */

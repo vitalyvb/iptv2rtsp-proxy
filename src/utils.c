@@ -34,7 +34,9 @@
 #include <printf.h>
 #include <sys/time.h>
 #include <fcntl.h>
+#include <errno.h>
 #include <arpa/inet.h> /* htonl() */
+#include <netinet/tcp.h> /* TCP_CONGESTION */
 
 #ifdef MALLOC_DEBUG
 #include "duma.h"
@@ -177,5 +179,21 @@ int multicast_group_leave(int fd, struct in_addr *group)
         return -1;
     }
 
+    return 0;
+}
+
+int set_tcp_congestion_ctl(int fd, const char *ccname)
+{
+#ifdef TCP_CONGESTION
+    socklen_t len;
+    int res;
+
+    len = strlen(ccname) + 1;
+    res = setsockopt(fd, IPPROTO_TCP, TCP_CONGESTION, ccname, len);
+
+    if (res){
+	log_warning("can not set TCP congestion control to '%s': %d", ccname, errno);
+    }
+#endif
     return 0;
 }

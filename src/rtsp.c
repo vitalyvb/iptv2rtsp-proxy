@@ -110,6 +110,7 @@ struct rtsp_server {
 
     ebb_server http_server;
     uint16_t http_listen_port;
+    char *http_congestion_ctl;
 
     int mpegio_latest_id;
     struct ht streamers_ht;
@@ -1810,6 +1811,7 @@ RTSP rtsp_alloc()
 int rtsp_load_config(THIS, dictionary * d)
 {
     const char *ini_listen_host;
+    const char *ini_http_congestion_ctl;
     uint16_t ini_listen_port, ini_rtp_server_base_port;
     int ini_mpegio_bufsize, ini_mpegio_delay;
     int ini_http_listen_port;
@@ -1822,6 +1824,7 @@ int rtsp_load_config(THIS, dictionary * d)
 	ini_listen_port = iniparser_getint(d, "rtsp:listen_port", 554);
 
     ini_http_listen_port = iniparser_getint(d, "http:listen_port", 0);
+    ini_http_congestion_ctl = iniparser_getstring(d, "http:congestion_ctl", NULL);
 
     ini_rtp_server_base_port = iniparser_getint(d, "rtsp:rtp_server_base_port", 4000);
 
@@ -1842,6 +1845,9 @@ int rtsp_load_config(THIS, dictionary * d)
     } else {
 	this->listen_addr.s_addr = htonl (INADDR_ANY);
     }
+
+    if (ini_http_congestion_ctl)
+	this->http_congestion_ctl = strdup(ini_http_congestion_ctl);
 
     this->rtp_base_port = ini_rtp_server_base_port;
 
@@ -1923,6 +1929,9 @@ int rtsp_init(THIS)
 
 	if (ebb_server_listen_on_port(&this->http_server, this->http_listen_port) < 0){
 	    log_warning("Failed to start HTTP server on port %d", this->http_listen_port);
+	} else {
+	    if (this->http_congestion_ctl)
+		set_tcp_congestion_ctl(this->http_server.fd, this->http_congestion_ctl);
 	}
     }
 
@@ -1986,6 +1995,9 @@ void rtsp_cleanup(THIS)
     ht_destroy(&this->streamers_ht);
     ht_destroy(&this->sess_ssrc_ht);
     ht_destroy(&this->sess_id_ht);
+
+    if (this->http_congestion_ctl)
+	free(this->http_congestion_ctl);
 
     xfree(this);
 }
