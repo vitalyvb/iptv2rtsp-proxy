@@ -48,15 +48,15 @@
 
 /**********************************************************************************/
 
-int cook_rtsp_session_id(char *dstbuf, int bufsize, rtsp_session_id *sess_id)
+int cook_client_session_id(char *dstbuf, int bufsize, client_session_id *sess_id)
 {
     int res;
-    assert(sizeof(long long unsigned int) == sizeof(rtsp_session_id));
+    assert(sizeof(long long unsigned int) == sizeof(client_session_id));
     res = snprintf(dstbuf, bufsize, "%llu", (long long unsigned int)*sess_id);
     return res <= bufsize ? res : -1;
 }
 
-int parse_rtsp_session_id(char *buf, rtsp_session_id *sess_id)
+int parse_client_session_id(char *buf, client_session_id *sess_id)
 {
     char *ebuf;
     long long ts;
@@ -222,109 +222,7 @@ struct rtsp_transport_descr *parse_transport_header(char *in_text, int len)
 
 /**********************************************************************************/
 
-static struct rtsp_requested_stream *alloc_requested_stream()
-{
-    struct rtsp_requested_stream *rs;
-    rs  = xmalloc(sizeof(struct rtsp_requested_stream));
-    memset(rs, 0, sizeof(struct rtsp_requested_stream));
-    return rs;
-}
-
-void free_requested_stream(struct rtsp_requested_stream *s)
-{
-    free(s);
-}
-
-struct rtsp_requested_stream *parse_requested_stream(int type, char *in_text, int len)
-{
-    char *buf, *p, *tokstr, *token, *tokptr = NULL;
-    struct rtsp_requested_stream *rs = alloc_requested_stream();
-    char *hostname_start, *path_start;
-    int toknum;
-
-    buf = xmalloc(len+1);
-    memcpy(buf, in_text, len);
-    buf[len] = 0;
-
-    p = buf;
-    if (type == REQUEST_URI_RTSP){
-	/* skip schema */
-	p = strchr(buf, ':');
-	if (p == NULL || (p[1] != '/') || (p[2] != '/')){
-	    free(buf);
-	    free(rs);
-	    return NULL;
-	}
-	p += 3; /* skip "://" */
-
-	/* get hostname */
-	hostname_start = p;
-	p = strchr(p, '/');
-	if (p ==  NULL){
-	    free(buf);
-	    free(rs);
-	    return NULL;
-	}
-	p[0] = 0;
-	strncpy(rs->hostname, hostname_start, sizeof(rs->hostname)-1);
-	p += 1; /* skip "/" */
-    } else if (type == REQUEST_URI_HTTP){
-	if (len > 0 && p[0] == '/'){
-	    p += 1; /* skip "/" */
-	}
-    } else {
-	free(buf);
-	free(rs);
-	return NULL;
-    }
-
-    path_start = p;
-
-    /*  get path and query string */
-    p = strchr(p, '?');
-    if (p == NULL){
-	strncpy(rs->path, path_start, sizeof(rs->path));
-    } else {
-	p[0] = 0;
-	p += 1;
-	strncpy(rs->path, path_start, sizeof(rs->path));
-	strncpy(rs->query, p, sizeof(rs->query));
-    }
-
-    /* parse path */
-    strcpy(buf, rs->path);
-
-    tokstr = buf;
-    for (toknum=0;toknum<3;toknum++) {
-	token = strtok_r(tokstr, "/", &tokptr);
-	tokstr = NULL;
-	if (token == NULL)
-	    break;
-
-	if (toknum == 0){
-	    strncpy(rs->category, token, sizeof(rs->category)-1);
-	} else if (toknum == 1){
-	    strncpy(rs->group, token, sizeof(rs->group)-1);
-	} else if (toknum == 2){
-	    strncpy(rs->port, token, sizeof(rs->port)-1);
-	}
-    }
-
-    log_debug("== Parsed URI");
-    log_debug("    host:   %s", rs->hostname);
-    log_debug("    path:   %s", rs->path);
-    log_debug("    query:  %s", rs->query);
-    log_debug("    * cat:  %s", rs->category);
-    log_debug("    * grp:  %s", rs->group);
-    log_debug("    * port: %s", rs->port);
-
-    free(buf);
-    return rs;
-}
-
-/**********************************************************************************/
-
-int cook_rtsp_rtp_info(char *dstbuf, int bufsize, struct rtsp_requested_stream *rs, uint32_t rtp_seq)
+int cook_rtsp_rtp_info(char *dstbuf, int bufsize, struct url_requested_stream *rs, uint32_t rtp_seq)
 {
     if (rs->query && rs->query[0])
 	snprintf(dstbuf, bufsize, "url=rtsp://%s/%s?%s;seq=%d", rs->hostname, rs->path, rs->query, rtp_seq);

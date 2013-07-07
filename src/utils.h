@@ -1,8 +1,6 @@
 #ifndef UTILS_H
 #define UTILS_H
 
-extern void DRE2over(int key_idx, uint8_t *DW);
-
 #define CRC32_INIT (0xffffffff)
 uint32_t crc32_recalc(const uint8_t *data, size_t len, uint32_t crc);
 uint32_t crc32_calc(const uint8_t *data, size_t len, uint32_t crc);

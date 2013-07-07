@@ -13,7 +13,9 @@ COMPILE.c=$(CC) $(CFLAGS) -c
 .c.o:
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-HEADERS = global.h config.h psi.h stats.h utils.h jhash.h mpeg_tbl.h rtspproto.h
+HEADERS = config.h csconv.h global.h ht.h httpsess.h jhash.h mpegio.h \
+	  mpeg_tbl.h psi.h rtcp.h rtp.h rtsp.h rtspproto.h rtspsess.h \
+	  url.h utils.h
 
 SRCS = server.c \
        mpegio.c \
@@ -24,6 +26,10 @@ SRCS = server.c \
        csconv.c \
        psi.c \
        rtsp.c \
+       rtspsess.c \
+       httpsess.c \
+       url.c \
+       rtcp.c \
        rtspproto.c
 
 OBJS = $(SRCS:.c=.o)

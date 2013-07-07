@@ -104,6 +104,10 @@ void log_data(int level, const char *module, const char *module_dyn, const char 
 
 /***************************************************/
 
+typedef uint64_t client_session_id;
+
+/***************************************************/
+
 extern int debug;
 extern int verbose;
 extern struct ev_loop *evloop;
