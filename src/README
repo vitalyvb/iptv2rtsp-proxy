@@ -1,0 +1,130 @@
+
+Introduction
+============
+
+UDP IPTV to RTSP proxy is a lightweight GNU/Linux daemon
+which, being installed on a LAN router, provides on-demand
+access to UDP multicast streams via RTSP and unicast RTP
+protocols.
+
+Since version 0.2 the conventional HTTP "continuous download"
+streaming method is supported.
+
+The server itself does not support streaming of any files,
+it only can receive incoming multicast streams and retransmit
+them to interested clients.
+
+The main purpose of the software is to provide simple IPTV
+service to small office or home ethernet and/or Wi-Fi LANs
+where upgrading network to handle multicast correctly is not
+an option.
+
+The software is not intended to handle large scale
+installations and service clients you don't trust (like
+public Internet).
+
+The software currently implements only a very limited subset of
+features described in these documents:
+
+    RFC3550 - RTP: A Transport Protocol for Real-Time Applications
+    RFC2326 - Real Time Streaming Protocol (RTSP)
+    RFC2327 - SDP: Session Description Protocol
+
+The goal is not to implement these completely, only parts that
+are required by popular software to function properly.
+
+RTSP protocol supports PAUSE requests, but this server supposed
+to work with "live" streams only and does not have any PVR
+functionality. While it's possible to "pause" streaming, it's
+impossible to resume from the point it was paused. After resuming,
+audio/video decoders will act as if there were a big packet loss.
+
+It is possible to implement FEC schemes for RTP, but it looks like
+there no clients supporting FEC now.
+
+Quick Start
+===========
+
+1. Download the source.
+2. Compile it with GNU make and GCC. This should produce
+   a binary named iptv2rtsp-proxy.
+3. You can copy the binary to any suitable place or keep
+   it with source for testing.
+4. Run server with
+
+    $ ./iptv2rtsp-proxy -f -s \<YOUR_IP> -l \<LISTEN_PORT>
+
+    for example:
+
+    $ ./iptv2rtsp-proxy -f -s 192.168.10.10 -l 5555
+
+5. Connect by opening an url in your media player:
+
+    rtsp://\<SERVER_IP>:\<LISTEN_PORT>/iptv/\<MCAST_GROUP>/\<UDP_PORT>
+
+    for example:
+
+    rtsp://192.168.0.1:5555/iptv/224.50.50.50/1234
+
+    or
+
+    http://192.168.0.1:5555/iptv/224.50.50.50/1234
+
+Configuration
+=============
+
+See iptv2rtsp-proxy.conf for details.
+
+Random notes
+============
+
+-f option tells server to stay in foreground, you'll see diagnostic
+output in your terminal, press Ctrl+C to terminate.
+
+-s is not an IP address servers listens connections on - it's used
+as SDP origin. Server listens on any address.
+
+-l specifies RTSP port. The default is 554, this means that you need
+a root privileges to start a server, so 5555 is used in the example above.
+
+options -c and -p can be used to specify names of config and pid files.
+
+If for any reason you need to connect to the server and you are behind
+a NAT make sure your NAT supports RTSP protocol (often they're not).
+For Linux you can install NAT helper: http://mike.it-loops.com/rtsp/.
+Please note: if using non-standart RTSP port number this port must
+be specified as nf_conntrack_rtsp option.
+
+HTTP protocol note
+==================
+
+There are essentially no signaling between server and client,
+almost no control over TCP behavior, all this makes error
+handling and recovery extremely difficult.
+
+If server detects that it can not send data to the client in
+more or less reliable way, the connection will be closed.
+
+The server has fixed-sized buffer for streamed data, this
+buffer will overflow quickly if client can not receive
+(or decode) data. Overflowed buffer can make streaming
+data severely damaged, thus preventing client to decode it,
+making the issue yet worse leaving no chance to recover.
+
+Some clients handle network continuous downloads as files,
+this is wrong. See
+http://en.wikipedia.org/wiki/Push%E2%80%93pull_strategy
+for details.
+
+In short: server sends data by servers' clock, there's no way
+to change this. Correct behavior for client would be to
+receive and process all data same moment it's available.
+Alternative to this is receiving data by clients' clock.
+Without proper synchronization (and there're usually none)
+it is possible socket buffers to overflow (if send rate is
+higher than receive or stream is damaged) effectively stalling
+all transmission for this client.
+
+=======
+Thanks!
+=======

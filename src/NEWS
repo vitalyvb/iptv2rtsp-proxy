@@ -1,0 +1,16 @@
+
+Version 0.2
+===========
+    * Added HTTP "continuous download" streaming
+
+    + Added support for RTP UDP multicast sources
+
+    + Improved support of multiple clients with same
+    IP address via RTSP
+
+    + Set IP TOS and socket priority for RTP streams
+
+
+Version 0.1
+===========
+    Initial release.
