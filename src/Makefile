@@ -1,7 +1,7 @@
 TOPDIR=./
 include $(TOPDIR)config.mk
 
-VERSION:=0.2
+VERSION:=0.2.1
 
 CFLAGS += -DVERSION=\"$(VERSION)\"
 

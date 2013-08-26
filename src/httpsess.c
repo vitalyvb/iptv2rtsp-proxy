@@ -59,6 +59,7 @@ struct http_session *http_session_alloc(THIS)
 
     sess = xmalloc(sizeof(struct http_session));
     memset(sess, 0 , sizeof(struct http_session));
+    sess->rtsp_server = this;
 
     sess->session_id = my_rand();
 
@@ -88,17 +89,26 @@ void http_session_destroy(THIS, struct http_session *sess)
     http_session_free(sess);
 }
 
-void http_session_release(THIS, struct http_session *sess)
+void http_session_cleanup(struct http_session *sess)
 {
-    if (this->http_sess_release) {
-	sess->release_next = this->http_sess_release;
-	this->http_sess_release = sess;
-    } else {
-	sess->release_next = NULL;
-	this->http_sess_release = sess;
+    if (sess->fd >= 0){
+	ev_io_stop(evloop, &(sess->fd_watcher));
+	close(sess->fd);
+	sess->fd = -1;
     }
 }
 
+static void ev_fd_rx_handler(struct ev_loop *loop, ev_io *w, int revents)
+{
+    struct http_session *sess = (struct http_session *)w->data;
+    THIS = sess->rtsp_server;
+
+    /* Either connection was closed or some data was received.
+     * No data is expected anyway, assume a fatal error.
+     */
+
+    http_session_delayed_destroy(this, sess->session_id);
+}
 
 struct http_session *http_setup_session(THIS, struct in_addr *client_addr, struct url_requested_stream *rs, int fd)
 {
@@ -116,12 +126,18 @@ struct http_session *http_setup_session(THIS, struct in_addr *client_addr, struc
 
     sess = http_session_alloc(this);
 
+    sess->fd = fd;
+
     client = mpegio_client_create(mpegio);
     setnonblocking(fd);
     mpegio_client_setup_fd(client, fd, sess->session_id);
 
     sess->streamer = streamer;
     mpegio_client_get_parameters(mpegio, client, &sess->mpegio_client_id, NULL, NULL);
+
+    ev_io_init(&sess->fd_watcher, ev_fd_rx_handler, fd, EV_READ);
+    sess->fd_watcher.data = sess;
+    ev_io_start(evloop, &(sess->fd_watcher));
 
     log_info("http session %llu, setup mpegio client id: %d", sess->session_id, sess->mpegio_client_id);
     return sess;

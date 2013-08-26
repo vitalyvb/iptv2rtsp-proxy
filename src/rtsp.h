@@ -58,7 +58,9 @@ struct rtsp_server {
 typedef struct rtsp_server *RTSP;
 
 void ht_register_rtsp_sess(RTSP, struct rtsp_session *sess);
+
 void ht_register_http_sess(RTSP, struct http_session *sess);
+void http_session_delayed_destroy(RTSP, client_session_id sess_id);
 
 struct rtsp_session *rtsp_session_find_by_ssrc(RTSP, uint32_t ssrc);
 

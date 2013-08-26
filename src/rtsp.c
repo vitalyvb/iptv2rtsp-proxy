@@ -1079,24 +1079,41 @@ static MPEGIO create_setup_mpegio(struct mpegio_config *conf)
     return mpegio;
 }
 
-
-void mpegio_fd_send_error_handler(void *param, int fd, uint64_t fd_param, int in_errno)
+static void http_session_plan_release(THIS, struct http_session *sess)
 {
-    THIS = param;
+    http_session_cleanup(sess);
+
+    if (this->http_sess_release) {
+	sess->release_next = this->http_sess_release;
+	this->http_sess_release = sess;
+    } else {
+	sess->release_next = NULL;
+	this->http_sess_release = sess;
+    }
+}
+
+void http_session_delayed_destroy(THIS, client_session_id sess_id)
+{
     struct http_session *sess;
     struct http_session tmpsess;
 
-    tmpsess.session_id = fd_param;
+    tmpsess.session_id = sess_id;
 
     sess = ht_remove(&this->http_sess_ht, &tmpsess, htfunc_http_sess, htfunc_http_sess_cmp);
 
     if (sess) {
-	close(fd);
-	sess->closed = 1;
-	http_session_release(this, sess);
+	http_session_plan_release(this, sess);
     } else {
-	log_info("error for unknown session: %ld", fd_param);
+	log_info("error for unknown session: %llu", sess_id);
     }
+}
+
+
+void mpegio_fd_send_error_handler(void *param, int fd, uint64_t fd_param, int in_errno)
+{
+    THIS = param;
+
+    http_session_delayed_destroy(this, fd_param);
 }
 
 void mpegio_send_error_handler(void *param, uint32_t ssrc, int in_errno)
