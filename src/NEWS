@@ -1,4 +1,12 @@
 
+Version 0.2.1
+===========
+    + Properly detect HTTP client disconnects - prevent
+    resource leakage under certain conditions
+
+    + Fixed bug which made first few seconds of HTTP stream
+    unplayable
+
 Version 0.2
 ===========
     * Added HTTP "continuous download" streaming

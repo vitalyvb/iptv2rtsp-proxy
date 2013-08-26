@@ -8,11 +8,14 @@
 
 struct http_session {
     struct hashable hh;
+    struct rtsp_server *rtsp_server;
+
+    int fd;
+    ev_io fd_watcher;
 
     client_session_id session_id;
 
     struct http_session *release_next;
-    int closed;
 
     struct rtsp_mpegio_streamer *streamer;
     int mpegio_client_id;
@@ -23,7 +26,7 @@ void http_session_free(struct http_session *sess);
 struct http_session *http_setup_session(RTSP, struct in_addr *client_addr, struct url_requested_stream *rs, int fd);
 int http_session_play(RTSP, struct http_session *sess);
 void http_session_destroy(RTSP, struct http_session *sess);
-void http_session_release(RTSP, struct http_session *sess);
+void http_session_cleanup(struct http_session *sess);
 
 int http_session_play(RTSP, struct http_session *sess);
 

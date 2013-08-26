@@ -493,7 +493,8 @@ static void send_to_fd_clients(THIS)
 	    client->send_pos += res;
 	}
 
-	if (client->send_pos >= this->ringbuf_wrap_tail_pos)
+	if (likely(this->ringbuf_wrap_tail_pos >= 0) &&
+		client->send_pos >= this->ringbuf_wrap_tail_pos)
 	    client->send_pos -= this->ringbuf_wrap_tail_pos;
 
 	client = client->next;
