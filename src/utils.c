@@ -197,3 +197,20 @@ int set_tcp_congestion_ctl(int fd, const char *ccname)
 #endif
     return 0;
 }
+
+int set_socket_high_priority(int fd)
+{
+    int tmp;
+
+    tmp = 0x88; /* AF41, IP precedence=4 */
+    if (setsockopt(fd, IPPROTO_IP, IP_TOS, &tmp, sizeof(tmp)) == -1){
+	log_warning("can not set socket ip priority");
+    }
+
+    tmp = 4; /* priority = 4 */
+    if (setsockopt(fd, SOL_SOCKET, SO_PRIORITY, &tmp, sizeof(tmp)) == -1){
+	log_warning("can not set socket priority");
+    }
+
+    return 0;
+}

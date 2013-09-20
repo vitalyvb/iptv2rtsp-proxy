@@ -1,4 +1,11 @@
 
+Version 0.2.2
+===========
+    + HTTP protocol now supports the URL scheme used by udpxy
+    for improved compatibility with some third-parity software
+
+    + Set socket priority for HTTP-streaming sockets
+
 Version 0.2.1
 ===========
     + Properly detect HTTP client disconnects - prevent

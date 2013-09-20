@@ -60,7 +60,7 @@ Quick Start
 
 5. Connect by opening an url in your media player:
 
-    rtsp://\<SERVER_IP>:\<LISTEN_PORT>/iptv/\<MCAST_GROUP>/\<UDP_PORT>
+    rtsp://<SERVER_IP>:<LISTEN_PORT>/iptv/<MCAST_GROUP>/<UDP_PORT>
 
     for example:
 
@@ -69,6 +69,10 @@ Quick Start
     or
 
     http://192.168.0.1:5555/iptv/224.50.50.50/1234
+
+    or
+
+    http://192.168.0.1:5555/udp/224.50.50.50:1234
 
 Configuration
 =============

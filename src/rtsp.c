@@ -700,12 +700,15 @@ static int http_method_get(struct client_request *request, struct server_respons
     int client_id;
     int new_fd;
 
-    if (!rs || strcmp(rs->category, "iptv") != 0){
+    if (!rs || ((strcmp(rs->category, "iptv") != 0) &&
+	    (strcmp(rs->category, "rtp") != 0) &&
+	    (strcmp(rs->category, "udp") != 0))){
 	STATUS_NOT_FOUND(response)
 	return 0;
     }
 
     new_fd = dup(EBB(connection)->fd);
+    set_socket_high_priority(new_fd);
     sess = http_setup_session(connection->rtsp_server, &connection->client_addr.sin_addr, rs, new_fd);
 
     if (sess != NULL){
@@ -1433,15 +1436,7 @@ int rtsp_init(THIS)
 	return -1;
     }
 
-    tmp = 0x88; /* AF41, IP precedence=4 */
-    if (setsockopt(fd, IPPROTO_IP, IP_TOS, &tmp, sizeof(tmp)) == -1){
-	log_warning("can not set socket ip priority");
-    }
-
-    tmp = 4; /* priority = 4 */
-    if (setsockopt(fd, SOL_SOCKET, SO_PRIORITY, &tmp, sizeof(tmp)) == -1){
-	log_warning("can not set socket priority");
-    }
+    set_socket_high_priority(fd);
 
     tmp = 1;
     if (setsockopt(fd, IPPROTO_IP, IP_RECVERR, &tmp, sizeof(tmp))){
