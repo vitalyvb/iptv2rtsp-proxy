@@ -116,7 +116,7 @@ int csconv_init()
     for (i=0;dvb_encodings[i].idx>=0;i++){
 	this->dvbconv[dvb_encodings[i].idx] = iconv_open("UTF-8//IGNORE", dvb_encodings[i].encoding);
 	if (this->dvbconv[dvb_encodings[i].idx] == (iconv_t)-1){
-	    log_error("failed to initialize dvb encoding '%s'", dvb_encodings[i].encoding);
+	    log_error("failed to initialize dvb encoding '%s': %s", dvb_encodings[i].encoding, strerror(errno));
 	}
     }
 

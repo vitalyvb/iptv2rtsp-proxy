@@ -1,6 +1,19 @@
+Version 0.2.3
+=============
+    + Set SO_REUSEADDR flag for sockets receiving multicast to
+    improve co-existing with other applications receiving multicast
+
+    + Improve some error messages
+
+Version 0.2.2
+=============
+    + HTTP protocol now supports the URL scheme used by udpxy
+    for improved compatibility with some third-parity software
+
+    + Set socket priority for HTTP-streaming sockets
 
 Version 0.2.1
-===========
+=============
     + Properly detect HTTP client disconnects - prevent
     resource leakage under certain conditions
 

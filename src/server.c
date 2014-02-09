@@ -214,7 +214,7 @@ int load_config(const char *filename)
     ini_dict = iniparser_load(filename);
 
     if (ini_dict == NULL){
-	log_error("Unable to load config file '%s'.", filename);
+	log_error("Unable to load config file '%s': %s", filename, strerror(errno));
     }
 
     io_sched_realtime = iniparser_getboolean(ini_dict, "sched:realtime_io", 0);
@@ -258,7 +258,7 @@ static void setup_io_prio()
 	sched_param.sched_priority = 10;
 	res = pthread_setschedparam(pthread_self(), SCHED_FIFO, &sched_param);
 	if (res){
-	    log_error("error setting realtime priority: %m");
+	    log_error("error setting realtime priority: %s", strerror(errno));
 	}
     }
 
@@ -278,7 +278,7 @@ static void setup_io_prio()
 	sched_param.sched_priority = 10;
 	res = sched_setscheduler(0, SCHED_FIFO, &sched_param);
 	if (res){
-	    log_error("error setting realtime priority: %m");
+	    log_error("error setting realtime priority: %s", strerror(errno));
 	}
     }
 
@@ -327,12 +327,12 @@ static int write_pid_file(const char *filename)
 
     pidfd = open(filename, O_WRONLY|O_CREAT, 0644);
     if (pidfd < 0){
-	log_error("error opening pid file '%s': %m", filename);
+	log_error("error opening pid file '%s': %s", filename, strerror(errno));
 	return 1;
     }
 
     if (write(pidfd, buf, len) != len){
-	log_error("error writing pid file: %m");
+	log_error("error writing pid file: %s", strerror(errno));
 	close(pidfd);
 	pidfd = -1;
 	return 1;
@@ -363,21 +363,21 @@ static void drop_privileges()
 
 	if (pidfd >= 0){
 	    if (fchown(pidfd, nopriv_uid, nopriv_gid))
-		log_warning("can not change pid file owner");
+		log_warning("can not change pid file owner: %s", strerror(errno));
 	}
 
 	setgroups(1, &nopriv_gid);
 
 	if (setregid(nopriv_gid, nopriv_gid)){
-	    log_error("failed to drop group privileges: %m");
+	    log_error("failed to drop group privileges: %s", strerror(errno));
 	}
 
 	if (setreuid(nopriv_uid, nopriv_uid)){
 	    /* real user change can fail due to FIFO process priority */
-	    log_error("failed to drop full user privileges: %m");
+	    log_error("failed to drop full user privileges: %s", strerror(errno));
 	    log_error("probably you have to increase /sys/kernel/uids/%d/cpu_rt_runtime or setup cgroups", nopriv_uid);
 	    if (seteuid(nopriv_uid))
-		log_error("failed to drop effective user privileges: %m");
+		log_error("failed to drop effective user privileges: %s", strerror(errno));
 	    else
 		log_info("changed effective user id successfully");
 	}
@@ -476,7 +476,7 @@ int main(int argc, char **argv)
     if (do_fork){
 	log_debug("forking...");
 	if (daemon(0, 0)){
-	    log_error("daemonize failed: %d", errno);
+	    log_error("daemonize failed: %s", strerror(errno));
 	    return -1;
 	}
 	if (write_pid_file(pid_fn)){

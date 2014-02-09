@@ -118,7 +118,7 @@ struct url_requested_stream *parse_requested_stream(int type, char *in_text, int
 
     tokstr = buf;
     for (toknum=0;toknum<3;toknum++) {
-	token = strtok_r(tokstr, "/", &tokptr);
+	token = strtok_r(tokstr, "/:", &tokptr);
 	tokstr = NULL;
 	if (token == NULL)
 	    break;

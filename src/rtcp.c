@@ -31,6 +31,7 @@
 #include <sys/select.h>
 #include <sys/time.h>
 #include <arpa/inet.h>
+#include <errno.h>
 
 #include "ebb.h"
 #include "jhash.h"
@@ -157,7 +158,7 @@ int rtcp_setup(THIS, handle_rtcp_data handler, void *param, struct in_addr *list
 
     fd = socket(PF_INET, SOCK_DGRAM, 0);
     if (fd < 0) {
-	log_error("can not create rtcp recv socket");
+	log_error("can not create rtcp recv socket: %s", strerror(errno));
 	return -1;
     }
 
@@ -169,7 +170,7 @@ int rtcp_setup(THIS, handle_rtcp_data handler, void *param, struct in_addr *list
     res = bind(fd, (struct sockaddr*)&addr, sizeof(addr));
 
     if (res < 0){
-	log_error("can not bind to rtcp socket");
+	log_error("can not bind to rtcp socket: %s", strerror(errno));
 	close(fd);
 	return -1;
     }

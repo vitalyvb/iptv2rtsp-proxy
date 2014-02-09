@@ -152,7 +152,7 @@ int multicast_group_join(int fd, struct in_addr *group)
     res = setsockopt(fd, IPPROTO_IP, IP_ADD_MEMBERSHIP, &multiaddr, sizeof(multiaddr));
 
     if (res < 0){
-        log_error("add membership failed");
+        log_error("add membership failed: %s", strerror(errno));
         return -1;
     }
 
@@ -175,7 +175,7 @@ int multicast_group_leave(int fd, struct in_addr *group)
     res = setsockopt(fd, IPPROTO_IP, IP_DROP_MEMBERSHIP, &multiaddr, sizeof(multiaddr));
 
     if (res < 0){
-        log_error("drop membership failed");
+        log_error("drop membership failed: %s", strerror(errno));
         return -1;
     }
 
@@ -192,8 +192,25 @@ int set_tcp_congestion_ctl(int fd, const char *ccname)
     res = setsockopt(fd, IPPROTO_TCP, TCP_CONGESTION, ccname, len);
 
     if (res){
-	log_warning("can not set TCP congestion control to '%s': %d", ccname, errno);
+	log_warning("can not set TCP congestion control to '%s': %s", ccname, strerror(errno));
     }
 #endif
+    return 0;
+}
+
+int set_socket_high_priority(int fd)
+{
+    int tmp;
+
+    tmp = 0x88; /* AF41, IP precedence=4 */
+    if (setsockopt(fd, IPPROTO_IP, IP_TOS, &tmp, sizeof(tmp)) == -1){
+	log_warning("can not set socket ip priority: %s", strerror(errno));
+    }
+
+    tmp = 4; /* priority = 4 */
+    if (setsockopt(fd, SOL_SOCKET, SO_PRIORITY, &tmp, sizeof(tmp)) == -1){
+	log_warning("can not set socket priority: %s", strerror(errno));
+    }
+
     return 0;
 }

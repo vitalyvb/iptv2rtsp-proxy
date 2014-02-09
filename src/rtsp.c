@@ -31,6 +31,7 @@
 #include <sys/select.h>
 #include <sys/time.h>
 #include <arpa/inet.h>
+#include <errno.h>
 
 #include "ebb.h"
 #include "jhash.h"
@@ -700,12 +701,15 @@ static int http_method_get(struct client_request *request, struct server_respons
     int client_id;
     int new_fd;
 
-    if (!rs || strcmp(rs->category, "iptv") != 0){
+    if (!rs || ((strcmp(rs->category, "iptv") != 0) &&
+	    (strcmp(rs->category, "rtp") != 0) &&
+	    (strcmp(rs->category, "udp") != 0))){
 	STATUS_NOT_FOUND(response)
 	return 0;
     }
 
     new_fd = dup(EBB(connection)->fd);
+    set_socket_high_priority(new_fd);
     sess = http_setup_session(connection->rtsp_server, &connection->client_addr.sin_addr, rs, new_fd);
 
     if (sess != NULL){
@@ -1160,7 +1164,7 @@ static int requested_stream_to_mpegio_key(THIS, struct url_requested_stream *rs,
     }
 
     if (inet_pton(AF_INET, rs->group, &conf->addr) != 1){
-	log_error("invalid ip address: %s", rs->group);
+	log_error("invalid ip address '%s': %s", rs->group, strerror(errno));
 	return -1;
     }
 
@@ -1396,7 +1400,7 @@ int rtsp_load_config(THIS, dictionary * d)
 
     if (strcmp(ini_listen_host, "0.0.0.0")) {
 	if (inet_aton(ini_listen_host, &this->listen_addr) == 0){
-	    log_error("mpegio: can not parse listen address");
+	    log_error("mpegio: can not parse listen address: %s", strerror(errno));
 	    return -1;
 	}
     } else {
@@ -1429,23 +1433,15 @@ int rtsp_init(THIS)
 
     fd = socket(PF_INET, SOCK_DGRAM, 0);
     if (fd < 0) {
-	log_error("can not create send socket");
+	log_error("can not create send socket: %s", strerror(errno));
 	return -1;
     }
 
-    tmp = 0x88; /* AF41, IP precedence=4 */
-    if (setsockopt(fd, IPPROTO_IP, IP_TOS, &tmp, sizeof(tmp)) == -1){
-	log_warning("can not set socket ip priority");
-    }
-
-    tmp = 4; /* priority = 4 */
-    if (setsockopt(fd, SOL_SOCKET, SO_PRIORITY, &tmp, sizeof(tmp)) == -1){
-	log_warning("can not set socket priority");
-    }
+    set_socket_high_priority(fd);
 
     tmp = 1;
     if (setsockopt(fd, IPPROTO_IP, IP_RECVERR, &tmp, sizeof(tmp))){
-	log_warning("setting IP_RECVERR failed, error detection is reduced");
+	log_warning("setting IP_RECVERR failed, error detection is reduced: %s", strerror(errno));
     }
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
@@ -1454,7 +1450,7 @@ int rtsp_init(THIS)
 
     res = bind(fd, (struct sockaddr*)&addr, sizeof(addr));
     if (res < 0){
-	log_error("can not bind rtp base socket");
+	log_error("can not bind rtp base socket: %s", strerror(errno));
 	close(fd);
 	return -1;
     }

@@ -1177,7 +1177,7 @@ static int mpegio_setup_name_ident(THIS)
     char ipaddr[64];
 
     if (inet_ntop(AF_INET, &this->addr, ipaddr, sizeof(ipaddr)) == NULL){
-	log_error("setup name inet_ntop() failed");
+	log_error("setup name inet_ntop() failed: %s", strerror(errno));
 	return -1;
     }
 
@@ -1225,13 +1225,18 @@ int mpegio_init(THIS)
 
     fd = socket(PF_INET, SOCK_DGRAM, 0);
     if (fd < 0) {
-	log_error("can not create recv socket");
+	log_error("can not create recv socket: %s", strerror(errno));
 	return -1;
+    }
+
+    opt_bufsize = 1;
+    if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt_bufsize, sizeof(opt_bufsize)) == -1){
+	log_warning("can not set address reuse flag: %s", strerror(errno));
     }
 
     opt_bufsize = this->opt_so_rcvbuf;
     if (setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &opt_bufsize, sizeof(opt_bufsize)) == -1){
-	log_warning("can not set socket rcvbuf size");
+	log_warning("can not set socket rcvbuf size: %s", strerror(errno));
     }
 
     memset(&addr, 0, sizeof(addr));
@@ -1242,7 +1247,7 @@ int mpegio_init(THIS)
     res = bind(fd, (struct sockaddr*)&addr, sizeof(addr));
 
     if (res < 0){
-	log_error("can not bind socket");
+	log_error("can not bind socket: %s", strerror(errno));
 	close(fd);
 	return -1;
     }
