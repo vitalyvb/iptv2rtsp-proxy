@@ -5,6 +5,8 @@ Version 0.2.3
 
     + Improve some error messages
 
+    + Added few more parameters to the configuration file
+
 Version 0.2.2
 =============
     + HTTP protocol now supports the URL scheme used by udpxy

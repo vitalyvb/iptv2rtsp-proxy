@@ -114,5 +114,7 @@ extern struct ev_loop *evloop;
 extern ev_tstamp ev_started_at;
 extern char *server_str_id;
 extern int server_listen_port;
+extern int high_prio_sockets;
+extern int recv_socket_bufsize;
 
 #endif /* GLOBAL_H */

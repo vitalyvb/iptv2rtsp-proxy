@@ -180,6 +180,8 @@ int mpegio_configure(MPEGIO _this, const struct mpegio_config *config)
     else
 	this->max_stream_delay = MPEGIO_MAX_STREAM_DELAY;
 
+    this->opt_so_rcvbuf = recv_socket_bufsize;
+
     return 0;
 }
 
@@ -1217,7 +1219,6 @@ int mpegio_init(THIS)
     }
 
     this->recv_fd = -1;
-    this->opt_so_rcvbuf = 64*1024;
 
     this->ringbuf = NULL;
     this->ringbuf_bb = xmalloc(RINGBUF_BB_SIZE);
@@ -1229,14 +1230,16 @@ int mpegio_init(THIS)
 	return -1;
     }
 
-    opt_bufsize = 1;
-    if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt_bufsize, sizeof(opt_bufsize)) == -1){
+    tmp = 1;
+    if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &tmp, sizeof(tmp)) == -1){
 	log_warning("can not set address reuse flag: %s", strerror(errno));
     }
 
-    opt_bufsize = this->opt_so_rcvbuf;
-    if (setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &opt_bufsize, sizeof(opt_bufsize)) == -1){
-	log_warning("can not set socket rcvbuf size: %s", strerror(errno));
+    if (this->opt_so_rcvbuf > 0) {
+	opt_bufsize = this->opt_so_rcvbuf;
+	if (setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &opt_bufsize, sizeof(opt_bufsize)) == -1){
+	    log_warning("can not set socket rcvbuf size to %d: %s", this->opt_so_rcvbuf, strerror(errno));
+	}
     }
 
     memset(&addr, 0, sizeof(addr));

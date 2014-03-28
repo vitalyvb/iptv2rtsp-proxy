@@ -69,6 +69,8 @@ struct ev_loop *evloop;
 ev_tstamp ev_started_at;
 char *server_str_id = NULL;
 int server_listen_port = 0;
+int high_prio_sockets;
+int recv_socket_bufsize;
 
 static int log_to_stderr;
 static int io_sched_realtime;
@@ -223,6 +225,10 @@ int load_config(const char *filename)
 	s = iniparser_getstring(ini_dict, "general:server_id", "192.168.0.1");
 	server_str_id = strdup(s);
     }
+
+    high_prio_sockets = iniparser_getboolean(ini_dict, "general:high_prio_sockets", 1);
+
+    recv_socket_bufsize = iniparser_getint(ini_dict, "general:socket_rxbufsize", 0);
 
     s = iniparser_getstring(ini_dict, "general:user", "nobody");
     nopriv_uid_name = xmalloc(strlen(s)+1);

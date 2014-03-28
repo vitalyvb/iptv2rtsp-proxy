@@ -194,6 +194,10 @@ int set_tcp_congestion_ctl(int fd, const char *ccname)
     if (res){
 	log_warning("can not set TCP congestion control to '%s': %s", ccname, strerror(errno));
     }
+#else
+#warning **************************
+#warning socket TCP congestion control change not supported
+#warning **************************
 #endif
     return 0;
 }

@@ -709,7 +709,8 @@ static int http_method_get(struct client_request *request, struct server_respons
     }
 
     new_fd = dup(EBB(connection)->fd);
-    set_socket_high_priority(new_fd);
+    if (high_prio_sockets)
+	set_socket_high_priority(new_fd);
     sess = http_setup_session(connection->rtsp_server, &connection->client_addr.sin_addr, rs, new_fd);
 
     if (sess != NULL){
@@ -1437,7 +1438,8 @@ int rtsp_init(THIS)
 	return -1;
     }
 
-    set_socket_high_priority(fd);
+    if (high_prio_sockets)
+	set_socket_high_priority(fd);
 
     tmp = 1;
     if (setsockopt(fd, IPPROTO_IP, IP_RECVERR, &tmp, sizeof(tmp))){
