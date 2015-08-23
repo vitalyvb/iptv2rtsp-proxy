@@ -397,6 +397,7 @@ static void handle_send_error_fd(THIS, struct mpegio_client *client, int in_errn
 	this->clients_list_restrict--;
 #endif
     } else {
+	log_warning("Unhandled error, closing fd %d", client->fd);
 	close(client->fd);
     }
 }
@@ -476,18 +477,14 @@ static void send_to_fd_clients(THIS)
 	res = send(client->fd, &this->ringbuf[client->send_pos], length, MSG_DONTWAIT);
 
 	if (res < 0){
-	    if (errno == EAGAIN){
-
-	    } else {
-		log_error("fd send err %d %d", res, errno);
+	    if (errno != EAGAIN){
+		log_error("Error sending data to the client %d: %s", client->id, strerror(errno));
 
 		handle_send_error_fd(this, client, errno);
 	    }
 	} else if (res != length){
-	    if (errno == EAGAIN){
-
-	    } else {
-		log_error("fd send err %d %d", res, errno);
+	    if (errno != EAGAIN){
+		log_error("Error sending data to the client %d: %s", client->id, strerror(errno));
 	    }
 
 	    client->send_pos += res;
@@ -674,6 +671,11 @@ static void mpegio_output_handler(THIS)
     }
 }
 
+static void cc_checker_clear(THIS)
+{
+    memset(this->cc_check, 0, sizeof(this->cc_check));
+}
+
 static int cc_checker(THIS, int pid, int payload_present, int cc)
 {
     int expect;
@@ -687,7 +689,7 @@ static int cc_checker(THIS, int pid, int payload_present, int cc)
 	/* Incremented only if payload is present
 	 */
 	expect = MPEG_HDR_CNT_NEXT(this->cc_check[pid].cc - 1*(!payload_present));
-	if (expect != cc){
+	if (expect != cc && this->active_clients > 0){
 	    log_warning("TS discontinuity (received %d, expected %d) for PID %d", cc, expect, pid);
 	}
     } else {
@@ -965,6 +967,7 @@ void mpegio_set_active(THIS, int active)
 	ev_timer_stop(evloop, &this->suicide_timer);
 	this->inactive_since = 0;
 	multicast_group_join(this->recv_fd, &this->addr);
+	cc_checker_clear(this);
     } else  if (this->active && !active){
 	log_info("pausing");
 	this->inactive_since = ev_now(evloop);
@@ -1081,8 +1084,10 @@ int mpegio_clientid_destroy(THIS, int client_id)
     }
 
     this->clients--;
-    if (this->clients == 0)
+    if (this->clients == 0){
+	ev_timer_set(&this->suicide_timer, MPEGIO_NOT_USED_TIMEOUT, 0.0);
 	ev_timer_start(evloop, &this->suicide_timer);
+    }
 
     if (IS_MPEGIO_CLIENT_ACTIVE(client->status)){
 	client->status = MPEGIO_CLIENT_STOP;
@@ -1223,6 +1228,13 @@ int mpegio_init(THIS)
     this->ringbuf = NULL;
     this->ringbuf_bb = xmalloc(RINGBUF_BB_SIZE);
     this->ringbuf_wrap_tail_pos = -1;
+    this->ringbuf_start = 0;
+    this->ringbuf_end = 0;
+
+    this->time_previous_packet = 0.0;
+    this->time_recv_started = 0.0;
+    this->time_recv_send = 0.0;
+    this->start_streaming = 0;
 
     fd = socket(PF_INET, SOCK_DGRAM, 0);
     if (fd < 0) {
@@ -1257,7 +1269,7 @@ int mpegio_init(THIS)
 
     this->recv_fd = fd;
 
-    memset(this->cc_check, 0, sizeof(this->cc_check));
+    cc_checker_clear(this);
 
     ev_io_init(&this->input_watcher, ev_mpegio_input_handler, this->recv_fd, EV_READ);
     this->input_watcher.data = this;

@@ -1,3 +1,10 @@
+Version 0.2.4
+=============
+    + Fixed a bug causing irrecoverable "ring buffer overflow" error
+    for some channels
+
+    + Minor improvements in logging and error handling
+
 Version 0.2.3
 =============
     + Set SO_REUSEADDR flag for sockets receiving multicast to

@@ -31,6 +31,7 @@
 #include <sys/select.h>
 #include <sys/time.h>
 #include <arpa/inet.h>
+#include <errno.h>
 
 #include "ebb.h"
 #include "jhash.h"
@@ -91,8 +92,13 @@ void http_session_destroy(THIS, struct http_session *sess)
 
 void http_session_cleanup(struct http_session *sess)
 {
+    struct rtsp_mpegio_streamer *streamer = sess->streamer;
+    MPEGIO mpegio = streamer->mpegio;
+
     if (sess->fd >= 0){
 	ev_io_stop(evloop, &(sess->fd_watcher));
+
+	mpegio_clientid_set_status(mpegio, sess->mpegio_client_id, MPEGIO_CLIENT_RELEASE);
 	close(sess->fd);
 	sess->fd = -1;
     }
